@@ -117,7 +117,7 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 - (CADisplayLink *)_createDisplayLink
 {
     CADisplayLink *link = nil;
-    if (@available(iOS 27.0, tvOS 27.0, *)) {
+    if (@available(iOS 27.0, tvOS 27.0, visionOS 27, *)) {
         // UIWindowScene's display link automatically retargets when the
         // scene moves between displays, so prefer it when available.
         link = [self.internalWindowScene displayLinkWithTarget:self selector:@selector(requestRender)];

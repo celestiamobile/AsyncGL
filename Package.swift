@@ -5,10 +5,10 @@ import PackageDescription
 let package = Package(
     name: "AsyncGL",
     platforms: [
-        .iOS(.v14),
-        .macCatalyst(.v14),
-        .tvOS(.v14),
-        .macOS(.v11),
+        .iOS(.v15),
+        .macCatalyst(.v15),
+        .tvOS(.v15),
+        .macOS(.v12),
         .visionOS(.v1),
     ],
     products: [

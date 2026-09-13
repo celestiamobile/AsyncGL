@@ -18,7 +18,7 @@
 @property (nonatomic) NSInteger internalPreferredFramesPerSecond;
 #if !TARGET_OS_OSX
 @property (nonatomic) CADisplayLink *displayLink;
-@property (weak, nonatomic) UIScreen *internalScreen;
+@property (weak, nonatomic) UIWindowScene *internalWindowScene;
 #else
 @property (nonatomic) CVDisplayLinkRef cvDisplayLink;
 @property (nonatomic) CADisplayLink *displayLink API_AVAILABLE(macos(14.0));
@@ -44,13 +44,14 @@
     if (self) {
         _msaaEnabled = msaaEnabled;
         _paused = YES;
-        _internalScreen = nil;
         _internalPreferredFramesPerSecond = frameRate;
         _displayLink = nil;
 #if !TARGET_OS_OSX
+        _internalWindowScene = nil;
         _pauseOnWillResignActive = YES;
         _resumeOnDidBecomeActive = YES;
 #else
+        _internalScreen = nil;
         _pauseOnWillResignActive = NO;
         _resumeOnDidBecomeActive = NO;
         _cvDisplayLink = NULL;
@@ -112,6 +113,23 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 }
 #endif
 
+#if !TARGET_OS_OSX
+- (CADisplayLink *)_createDisplayLink
+{
+    CADisplayLink *link = nil;
+    if (@available(iOS 27.0, tvOS 27.0, *)) {
+        // UIWindowScene's display link automatically retargets when the
+        // scene moves between displays, so prefer it when available.
+        link = [self.internalWindowScene displayLinkWithTarget:self selector:@selector(requestRender)];
+    }
+    if (link == nil)
+        link = [self.internalWindowScene.screen displayLinkWithTarget:self selector:@selector(requestRender)];
+    if (link == nil)
+        link = [CADisplayLink displayLinkWithTarget:self selector:@selector(requestRender)];
+    return link;
+}
+#endif
+
 #pragma mark - getters/setters
 
 - (void)setPaused:(BOOL)paused
@@ -139,14 +157,13 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 #if TARGET_OS_OSX
         if (@available(macOS 14.0, *)) {
 #endif
-            self.displayLink = [self.internalScreen displayLinkWithTarget:self selector:@selector(requestRender)];
-            if (self.displayLink == nil) {
 #if !TARGET_OS_OSX
-                self.displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(requestRender)];
+            self.displayLink = [self _createDisplayLink];
 #else
+            self.displayLink = [self.internalScreen displayLinkWithTarget:self selector:@selector(requestRender)];
+            if (self.displayLink == nil)
                 self.displayLink = [self.view displayLinkWithTarget:self selector:@selector(requestRender)];
 #endif
-            }
             [self setPreferredFramesPerSecond:self.internalPreferredFramesPerSecond displayLink:self.displayLink];
             [self.displayLink addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSRunLoopCommonModes];
 #if TARGET_OS_OSX
@@ -181,17 +198,17 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 
 #if !TARGET_OS_OSX
 - (void)_viewWillMoveToWindow:(UIWindow *)window {
+    UIWindowScene *windowScene = [window windowScene];
+    [self setWindowScene:windowScene];
+    [self setPaused:windowScene == nil];
+}
 #else
 - (void)_viewWillMoveToWindow:(NSWindow *)window {
-#endif
-#if !TARGET_OS_OSX
-    UIScreen *screen = [[window windowScene] screen];
-#else
     NSScreen *screen = [window screen];
-#endif
     [self setScreen:screen];
     [self setPaused:screen == nil];
 }
+#endif
 
 - (BOOL)prepareGL:(CGSize)rect samples:(NSInteger)samples
 {
@@ -205,35 +222,41 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 
 - (void)setPreferredFramesPerSecond:(NSInteger)preferredFramesPerSecond {
     _internalPreferredFramesPerSecond = preferredFramesPerSecond;
-    [self setPreferredFramesPerSecond:preferredFramesPerSecond displayLink:_displayLink];
+#if TARGET_OS_OSX
+    if (@available(macOS 14.0, *))
+#endif
+        [self setPreferredFramesPerSecond:preferredFramesPerSecond displayLink:_displayLink];
 }
 
 #if !TARGET_OS_OSX
-- (void)setScreen:(UIScreen *)screen
+- (void)setWindowScene:(UIWindowScene *)windowScene
+{
+    _internalWindowScene = windowScene;
+
+    if (_displayLink != nil) {
+        [_displayLink invalidate];
+        _displayLink = nil;
+    }
+
+    _displayLink = [self _createDisplayLink];
+    [self setPreferredFramesPerSecond:_internalPreferredFramesPerSecond displayLink:_displayLink];
+    [_displayLink addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSRunLoopCommonModes];
+}
 #else
 - (void)setScreen:(NSScreen *)screen
-#endif
 {
     _internalScreen = screen;
-#if TARGET_OS_OSX
     if (@available(macOS 14.0, *)) {
-#endif
         if (_displayLink != nil) {
             [_displayLink invalidate];
             _displayLink = nil;
         }
 
         _displayLink = [screen displayLinkWithTarget:self selector:@selector(requestRender)];
-        if (_displayLink == nil) {
-#if !TARGET_OS_OSX
-            _displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(requestRender)];
-#else
+        if (_displayLink == nil)
             _displayLink = [self.view displayLinkWithTarget:self selector:@selector(requestRender)];
-#endif
-        }
         [self setPreferredFramesPerSecond:_internalPreferredFramesPerSecond displayLink:_displayLink];
         [_displayLink addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSRunLoopCommonModes];
-#if TARGET_OS_OSX
     } else {
         if (_cvDisplayLink != NULL) {
             CVDisplayLinkStop(_cvDisplayLink);
@@ -249,8 +272,8 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
         CVDisplayLinkSetOutputCallback(self.cvDisplayLink, displayCallback, (__bridge void *)(self));
         CVDisplayLinkStart(self.cvDisplayLink);
     }
-#endif
 }
+#endif
 
 #pragma mark - private methods
 - (void)_configureNotifications
@@ -277,7 +300,11 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 
 - (void)_resumeByNotification
 {
+#if !TARGET_OS_OSX
+    if (_resumeOnDidBecomeActive && _internalWindowScene != nil)
+#else
     if (_resumeOnDidBecomeActive && _internalScreen != nil)
+#endif
         [self setPaused:NO];
 }
 
@@ -287,36 +314,26 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
         return;
 
 #if !TARGET_OS_OSX
-    UIScreen *screen = [[[[self view] window] windowScene] screen];
+    UIWindowScene *windowScene = [[[self view] window] windowScene];
+    [self setWindowScene:windowScene];
+    [self setPaused:windowScene == nil];
 #else
     NSScreen *screen = [[[self view] window] screen];
-#endif
     [self setScreen:screen];
     [self setPaused:screen == nil];
+#endif
 }
 
-- (void)setPreferredFramesPerSecond:(NSInteger)preferredFramesPerSecond displayLink:(CADisplayLink *)displayLink API_AVAILABLE(ios(10.0), tvos(10.0), macos(14.0)) {
+- (void)setPreferredFramesPerSecond:(NSInteger)preferredFramesPerSecond displayLink:(CADisplayLink *)displayLink API_AVAILABLE(ios(15.0), tvos(15.0), macos(14.0)) {
     if (preferredFramesPerSecond >= 0) {
-#if !TARGET_OS_OSX
-        if (@available(iOS 15.0, tvOS 15.0, *)) {
-#endif
-            [displayLink setPreferredFrameRateRange:CAFrameRateRangeMake(preferredFramesPerSecond / 2, preferredFramesPerSecond, preferredFramesPerSecond)];
-#if !TARGET_OS_OSX
-        } else {
-            [displayLink setPreferredFramesPerSecond:preferredFramesPerSecond];
-        }
-#endif
+        [displayLink setPreferredFrameRateRange:CAFrameRateRangeMake(preferredFramesPerSecond / 2, preferredFramesPerSecond, preferredFramesPerSecond)];
     } else {
+#if !TARGET_OS_OSX
+        CGFloat maxFramesPerSecond = [self.internalWindowScene.screen maximumFramesPerSecond];
+#else
         CGFloat maxFramesPerSecond = [self.internalScreen maximumFramesPerSecond];
-#if !TARGET_OS_OSX
-        if (@available(iOS 15.0, tvOS 15.0, *)) {
 #endif
-            [displayLink setPreferredFrameRateRange:CAFrameRateRangeMake(maxFramesPerSecond / 2, maxFramesPerSecond, maxFramesPerSecond)];
-#if !TARGET_OS_OSX
-        } else {
-            [displayLink setPreferredFramesPerSecond:maxFramesPerSecond];
-        }
-#endif
+        [displayLink setPreferredFrameRateRange:CAFrameRateRangeMake(maxFramesPerSecond / 2, maxFramesPerSecond, maxFramesPerSecond)];
     }
 }
 

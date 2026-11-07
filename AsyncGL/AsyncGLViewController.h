@@ -43,6 +43,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)drawGL:(CGSize)size NS_SWIFT_NONISOLATED;
 - (void)clearGL NS_SWIFT_NONISOLATED;
 
+// Call on main before releasing the controller. Cleanup finishes asynchronously
+// on the render thread, retaining the controller until clearGL returns.
+- (void)shutdown;
+
 - (void)setPreferredFramesPerSecond:(NSInteger)preferredFramesPerSecond API_AVAILABLE(ios(10.0), tvos(10.0), macos(14.0));
 
 @end

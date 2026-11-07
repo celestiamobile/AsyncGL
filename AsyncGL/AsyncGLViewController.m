@@ -28,6 +28,7 @@
 @property (nonatomic) BOOL msaaEnabled;
 @property (atomic, getter=isReady) BOOL ready;
 @property (nonatomic) AsyncGLAPI api;
+@property (nonatomic) BOOL shuttingDown;
 @end
 
 @implementation AsyncGLViewController
@@ -67,6 +68,8 @@
 
 - (void)loadView
 {
+    if (_shuttingDown)
+        [NSException raise:NSInternalInconsistencyException format:@"The controller has shut down"];
     _glView = [AsyncGLView new];
     _glView.api = _api;
     _glView.msaaEnabled = _msaaEnabled;
@@ -79,6 +82,22 @@
 
 - (void)dealloc
 {
+    [self invalidateDisplayLink];
+    [_glView clear];
+}
+
+- (void)shutdown {
+    NSAssert([NSThread isMainThread], @"Shutdown must be requested on the main thread");
+    if (_shuttingDown)
+        return;
+    _shuttingDown = YES;
+    self.ready = NO;
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    [self invalidateDisplayLink];
+    [_glView clearWithDelegate:self];
+}
+
+- (void)invalidateDisplayLink {
     if (_displayLink) {
         [_displayLink invalidate];
         _displayLink = nil;
@@ -91,8 +110,6 @@
         _cvDisplayLink = NULL;
     }
 #endif
-
-    [_glView clear];
 }
 
 #pragma mark - private methods
@@ -154,31 +171,15 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
         return NO;
 
     dispatch_sync(dispatch_get_main_queue(), ^{
-#if TARGET_OS_OSX
-        if (@available(macOS 14.0, *)) {
-#endif
+        if (self.shuttingDown)
+            return;
 #if !TARGET_OS_OSX
-            self.displayLink = [self _createDisplayLink];
+        [self setWindowScene:self.internalWindowScene];
 #else
-            self.displayLink = [self.internalScreen displayLinkWithTarget:self selector:@selector(requestRender)];
-            if (self.displayLink == nil)
-                self.displayLink = [self.view displayLinkWithTarget:self selector:@selector(requestRender)];
+        [self setScreen:self.internalScreen];
 #endif
-            [self setPreferredFramesPerSecond:self.internalPreferredFramesPerSecond displayLink:self.displayLink];
-            [self.displayLink addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSRunLoopCommonModes];
-#if TARGET_OS_OSX
-        } else {
-            NSNumber *directDisplayIDNumber = self.internalScreen.deviceDescription[@"NSScreenNumber"];
-            if (directDisplayIDNumber != nil)
-                CVDisplayLinkCreateWithCGDisplay((CGDirectDisplayID)[directDisplayIDNumber unsignedIntValue], &self->_cvDisplayLink);
-            else
-                CVDisplayLinkCreateWithActiveCGDisplays(&self->_cvDisplayLink);
-            CVDisplayLinkSetOutputCallback(self.cvDisplayLink, displayCallback, (__bridge void *)(self));
-            CVDisplayLinkStart(self.cvDisplayLink);
-        }
-#endif
+        self.ready = YES;
     });
-    [self setReady:YES];
     return YES;
 }
 
@@ -232,13 +233,12 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 - (void)setWindowScene:(UIWindowScene *)windowScene
 {
     _internalWindowScene = windowScene;
-
-    if (_displayLink != nil) {
-        [_displayLink invalidate];
-        _displayLink = nil;
-    }
+    [self invalidateDisplayLink];
+    if (windowScene == nil || _shuttingDown)
+        return;
 
     _displayLink = [self _createDisplayLink];
+    _displayLink.paused = _paused;
     [self setPreferredFramesPerSecond:_internalPreferredFramesPerSecond displayLink:_displayLink];
     [_displayLink addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSRunLoopCommonModes];
 }
@@ -246,31 +246,25 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 - (void)setScreen:(NSScreen *)screen
 {
     _internalScreen = screen;
+    [self invalidateDisplayLink];
+    if (screen == nil || _shuttingDown)
+        return;
     if (@available(macOS 14.0, *)) {
-        if (_displayLink != nil) {
-            [_displayLink invalidate];
-            _displayLink = nil;
-        }
-
         _displayLink = [screen displayLinkWithTarget:self selector:@selector(requestRender)];
         if (_displayLink == nil)
             _displayLink = [self.view displayLinkWithTarget:self selector:@selector(requestRender)];
+        _displayLink.paused = _paused;
         [self setPreferredFramesPerSecond:_internalPreferredFramesPerSecond displayLink:_displayLink];
         [_displayLink addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSRunLoopCommonModes];
     } else {
-        if (_cvDisplayLink != NULL) {
-            CVDisplayLinkStop(_cvDisplayLink);
-            CVDisplayLinkRelease(_cvDisplayLink);
-            _cvDisplayLink = NULL;
-        }
-
         NSNumber *directDisplayIDNumber = screen.deviceDescription[@"NSScreenNumber"];
         if (directDisplayIDNumber != nil)
             CVDisplayLinkCreateWithCGDisplay((CGDirectDisplayID)[directDisplayIDNumber unsignedIntValue], &self->_cvDisplayLink);
         else
             CVDisplayLinkCreateWithActiveCGDisplays(&self->_cvDisplayLink);
         CVDisplayLinkSetOutputCallback(self.cvDisplayLink, displayCallback, (__bridge void *)(self));
-        CVDisplayLinkStart(self.cvDisplayLink);
+        if (!_paused)
+            CVDisplayLinkStart(self.cvDisplayLink);
     }
 }
 #endif

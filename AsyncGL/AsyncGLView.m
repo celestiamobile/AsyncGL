@@ -153,11 +153,11 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 
 @implementation PassthroughGLLayer
 - (CGLPixelFormatObj)copyCGLPixelFormatForDisplayMask:(uint32_t)mask {
-    return _pixelFormat;
+    return _pixelFormat != NULL ? CGLRetainPixelFormat(_pixelFormat) : NULL;
 }
 
 - (CGLContextObj)copyCGLContextForPixelFormat:(CGLPixelFormatObj)pf {
-    return _renderContext;
+    return _renderContext != NULL ? CGLRetainContext(_renderContext) : NULL;
 }
 
 - (BOOL)canDrawInCGLContext:(CGLContextObj)ctx pixelFormat:(CGLPixelFormatObj)pf forLayerTime:(CFTimeInterval)t displayTime:(const CVTimeStamp *)ts {
@@ -184,6 +184,10 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 @property (nonatomic) NSUInteger pauseTaskCount;
 @property (nonatomic) AsyncGLViewEvent event;
 @property (nonatomic) BOOL contextsCreated;
+@property (nonatomic) BOOL initializationDeferred;
+@property (nonatomic) BOOL didPrepareGL;
+@property (nonatomic) BOOL cleanupStarted;
+@property (nonatomic) id<AsyncGLViewDelegate> cleanupDelegate;
 @property (nonatomic) NSMutableArray *tasks;
 @property (nonatomic) AsyncGLViewContextState contextState;
 @property (nonatomic) BOOL requestExitThread;
@@ -388,7 +392,13 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 }
 
 - (void)clear {
+    [self clearWithDelegate:nil];
+}
+
+- (void)clearWithDelegate:(id<AsyncGLViewDelegate>)delegate {
     [_condition lock];
+    if (!_cleanupStarted && _cleanupDelegate == nil && delegate != nil)
+        _cleanupDelegate = delegate;
     _requestExitThread = YES;
     [_condition signal];
     [_condition unlock];
@@ -599,6 +609,14 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
                         [self _checkViewState];
                     });
                 }
+                else if (_initializationDeferred) {
+                    [self _clearGL];
+                    _initializationDeferred = NO;
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        self.contextState = AsyncGLViewContextStateCreationRequested;
+                        [self _checkViewState];
+                    });
+                }
                 else {
                     [_condition lock];
                     _requestExitThread = YES;
@@ -740,6 +758,16 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 #endif
 
 - (void)createContexts {
+    [_condition lock];
+    BOOL stopped = _requestExitThread;
+    [_condition unlock];
+    if (stopped)
+        return;
+    CGSize size = [self pixelSize];
+    if (size.width < 1 || size.height < 1) {
+        _contextState = AsyncGLViewContextStateCreationRequested;
+        return;
+    }
 #ifdef USE_EGL
     _contextState = AsyncGLViewContextStateMainContextCreated;
 
@@ -793,6 +821,12 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 #endif
 }
 
+- (CGSize)pixelSize {
+    CGSize size = self.frame.size;
+    CGFloat scale = self.layer.contentsScale;
+    return CGSizeMake(size.width * scale, size.height * scale);
+}
+
 - (BOOL)createRenderContext {
 #ifdef USE_EGL
     _display = AsyncGLAcquireDisplay();
@@ -813,10 +847,15 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
     __block CGSize size;
     __block EGLSurface renderSurface = EGL_NO_SURFACE;
     dispatch_sync(dispatch_get_main_queue(), ^{
-        renderSurface = eglCreateWindowSurface(_display, _renderConfig, (__bridge EGLNativeWindowType)(_metalLayer), NULL);
-        size = self.frame.size;
+        size = [self pixelSize];
+        if (size.width >= 1 && size.height >= 1)
+            renderSurface = eglCreateWindowSurface(_display, _renderConfig, (__bridge EGLNativeWindowType)(_metalLayer), NULL);
     });
     _renderSurface = renderSurface;
+    if (size.width < 1 || size.height < 1) {
+        _initializationDeferred = YES;
+        return NO;
+    }
 
     if (_renderSurface == EGL_NO_SURFACE) {
         NSLog(@"eglCreateWindowSurface() returned error %d", eglGetError());
@@ -850,13 +889,16 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 
     __block CGSize size;
     dispatch_sync(dispatch_get_main_queue(), ^{
-        CGSize frameSize = self.frame.size;
-        CGFloat scale = self.layer.contentsScale;
-        size = CGSizeMake(frameSize.width * scale, frameSize.height * scale);
-
-        [self makeMainContextCurrent];
-        [self createMainBuffers];
+        size = [self pixelSize];
+        if (size.width >= 1 && size.height >= 1) {
+            [self makeMainContextCurrent];
+            [self createMainBuffers];
+        }
     });
+    if (size.width < 1 || size.height < 1) {
+        _initializationDeferred = YES;
+        return NO;
+    }
 
     [self makeRenderContextCurrent];
 
@@ -900,10 +942,12 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 
     __block CGSize size;
     dispatch_sync(dispatch_get_main_queue(), ^{
-        CGSize frameSize = self.frame.size;
-        CGFloat scale = self.layer.contentsScale;
-        size = CGSizeMake(frameSize.width * scale, frameSize.height * scale);
+        size = [self pixelSize];
     });
+    if (size.width < 1 || size.height < 1) {
+        _initializationDeferred = YES;
+        return NO;
+    }
     glGenRenderbuffers(1, &_renderColorbuffer);
     glBindRenderbuffer(GL_RENDERBUFFER, _renderColorbuffer);
     return [self createRenderBuffers:size];
@@ -1025,6 +1069,7 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 
 #pragma mark - internal implementation
 - (BOOL)setupGL:(CGSize)size {
+    _didPrepareGL = YES;
     return [_delegate _prepareGL:size samples:(NSInteger)_sampleCount];
 }
 
@@ -1061,15 +1106,32 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 
 #pragma mark - clear
 - (void)clearGL {
-    [_delegate _clearGL];
+    [_condition lock];
+    _cleanupStarted = YES;
+    __block id<AsyncGLViewDelegate> delegate = _cleanupDelegate ?: _delegate;
+    _cleanupDelegate = nil;
+    [_condition unlock];
+    if (_didPrepareGL) {
+        [self makeRenderContextCurrent];
+        [delegate _clearGL];
+    }
 
     [self _clearGL];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        delegate = nil;
+    });
 }
 
 - (void)_clearGL {
-    glFlush();
-
-    [self clearResources];
+    BOOL canUseContext = _renderContext != NULL;
+#ifdef USE_EGL
+    canUseContext = canUseContext && _renderSurface != EGL_NO_SURFACE;
+#endif
+    if (canUseContext) {
+        [self makeRenderContextCurrent];
+        glFlush();
+        [self clearResources];
+    }
     [self destroyRenderContext];
 
     dispatch_sync(dispatch_get_main_queue(), ^{
@@ -1118,7 +1180,19 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 
 - (void)destroyMainContext {
 #ifndef USE_EGL
-#if !TARGET_OSX_OR_CATALYST
+#if TARGET_OSX_OR_CATALYST
+    _glLayer.sourceFramebuffer = 0;
+    if (_glLayer.renderContext != NULL) {
+        CGLReleaseContext(_glLayer.renderContext);
+        _glLayer.renderContext = NULL;
+    }
+    if (_glLayer.pixelFormat != NULL) {
+        CGLReleasePixelFormat(_glLayer.pixelFormat);
+        _glLayer.pixelFormat = NULL;
+    }
+#else
+    if (_mainContext == nil)
+        return;
     [self makeMainContextCurrent];
     glFlush();
 
@@ -1149,9 +1223,14 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
         AsyncGLReleaseDisplay(_display);
         _display = EGL_NO_DISPLAY;
     }
+    _renderConfig = NULL;
 #else
 #if TARGET_OSX_OR_CATALYST
-    CGLReleaseContext(_renderContext);
+    if (_renderContext != NULL) {
+        if (CGLGetCurrentContext() == _renderContext)
+            CGLSetCurrentContext(NULL);
+        CGLReleaseContext(_renderContext);
+    }
     _renderContext = NULL;
 #else
     _renderContext = nil;
@@ -1191,6 +1270,8 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 }
 
 - (void)_checkViewState {
+    if (_contextState == AsyncGLViewContextStateCreationRequested)
+        [self createContexts];
     if (_contextState != AsyncGLViewContextStateRenderContextCreated)
         return;
 
@@ -1219,6 +1300,11 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 - (void)layoutSubviews {
     [super layoutSubviews];
 
+    [self _checkViewState];
+}
+#else
+- (void)setFrameSize:(NSSize)size {
+    [super setFrameSize:size];
     [self _checkViewState];
 }
 #endif

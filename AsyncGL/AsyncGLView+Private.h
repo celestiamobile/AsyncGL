@@ -35,6 +35,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)enqueueTask:(void(^)(void))task requiringActiveContext:(BOOL)requiresActiveContext;
 - (void)render;
 - (void)clear;
+- (void)clearWithDelegate:(nullable id<AsyncGLViewDelegate>)delegate;
 - (void)pause;
 - (void)resume;
 - (void)makeRenderContextCurrent;

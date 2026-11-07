@@ -1012,12 +1012,12 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
     }
 
     if (_sampleDepthbuffer != 0) {
-        glDeleteFramebuffers(1, &_sampleDepthbuffer);
+        glDeleteRenderbuffers(1, &_sampleDepthbuffer);
         _sampleDepthbuffer = 0;
     }
 
     if (_sampleColorbuffer != 0) {
-        glDeleteFramebuffers(1, &_sampleColorbuffer);
+        glDeleteRenderbuffers(1, &_sampleColorbuffer);
         _sampleColorbuffer = 0;
     }
 #endif

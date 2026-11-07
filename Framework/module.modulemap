@@ -1,5 +1,0 @@
-framework module AsyncGL {
-    umbrella header "AsyncGL.h"
-    export *
-    module * { export * }
-}

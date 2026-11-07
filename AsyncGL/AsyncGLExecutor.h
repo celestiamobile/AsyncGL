@@ -13,7 +13,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (instancetype)init;
 
+// Work queued while paused runs after rendering resumes.
 - (void)runTaskAsynchronously:(void(NS_SWIFT_SENDABLE ^)(void))task;
+// Runs inline on the render thread; otherwise requires an initialized, unpaused view.
 - (void)runTaskSynchronously:(void(NS_SWIFT_SENDABLE ^)(void))task;
 - (void)makeRenderContextCurrent;
 - (void)prepareForDrawing:(void (NS_NOESCAPE ^ _Nullable)(void))draw resolve:(void (NS_NOESCAPE ^ _Nullable)(void))resolve NS_SWIFT_NONISOLATED;

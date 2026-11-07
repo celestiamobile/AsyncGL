@@ -74,6 +74,7 @@
     _glView.delegate = self;
     self.view = _glView;
     _internalExecutor.view = _glView;
+    _paused ? [_glView pause] : [_glView resume];
 }
 
 - (void)dealloc
@@ -143,8 +144,7 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
         paused ? CVDisplayLinkStop(_cvDisplayLink) : CVDisplayLinkStart(_cvDisplayLink);
 #endif
 
-    if ([self isReady])
-        paused ? [_glView pause] : [_glView resume];
+    paused ? [_glView pause] : [_glView resume];
 }
 
 #pragma mark - AsyncGLViewDelegate

@@ -32,6 +32,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)commonSetup;
 - (void)requestRender;
 - (void)enqueueTask:(void(^)(void))task;
+- (void)enqueueTask:(void(^)(void))task requiringActiveContext:(BOOL)requiresActiveContext;
 - (void)render;
 - (void)clear;
 - (void)pause;

@@ -40,6 +40,40 @@ typedef NS_ENUM(NSUInteger, AsyncGLViewContextState) {
 @import libGLESv2;
 @import libEGL;
 
+static EGLDisplay AsyncGLSharedDisplay = EGL_NO_DISPLAY;
+static NSUInteger AsyncGLDisplayUsers = 0;
+
+static EGLDisplay AsyncGLAcquireDisplay(void) {
+    @synchronized ([AsyncGLView class]) {
+        if (AsyncGLDisplayUsers == 0) {
+            EGLAttrib attributes[] = { EGL_NONE };
+            EGLDisplay display = eglGetPlatformDisplay(EGL_PLATFORM_ANGLE_ANGLE, NULL, attributes);
+            if (display == EGL_NO_DISPLAY) {
+                NSLog(@"eglGetPlatformDisplay() returned error %d", eglGetError());
+                return EGL_NO_DISPLAY;
+            }
+            if (!eglInitialize(display, NULL, NULL)) {
+                NSLog(@"eglInitialize() returned error %d", eglGetError());
+                return EGL_NO_DISPLAY;
+            }
+            AsyncGLSharedDisplay = display;
+        }
+        ++AsyncGLDisplayUsers;
+        return AsyncGLSharedDisplay;
+    }
+}
+
+static void AsyncGLReleaseDisplay(EGLDisplay display) {
+    @synchronized ([AsyncGLView class]) {
+        NSCAssert(display == AsyncGLSharedDisplay && AsyncGLDisplayUsers > 0, @"Unbalanced EGL display release");
+        if (--AsyncGLDisplayUsers == 0) {
+            if (!eglTerminate(display))
+                NSLog(@"eglTerminate() returned error %d", eglGetError());
+            AsyncGLSharedDisplay = EGL_NO_DISPLAY;
+        }
+    }
+}
+
 #if DEBUG
 typedef void (GL_APIENTRY *AsyncGLDebugMessageCallbackKHRProc)(GLDEBUGPROCKHR callback, const void *userParam);
 typedef void (GL_APIENTRY *AsyncGLDebugMessageControlKHRProc)(GLenum source, GLenum type, GLenum severity, GLsizei count, const GLuint *ids, GLboolean enabled);
@@ -147,6 +181,7 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 @property (nonatomic) NSCondition *condition;
 @property (nonatomic) os_unfair_lock renderLock;
 @property (nonatomic) BOOL suspendedFlag;
+@property (nonatomic) NSUInteger pauseTaskCount;
 @property (nonatomic) AsyncGLViewEvent event;
 @property (nonatomic) BOOL contextsCreated;
 @property (nonatomic) NSMutableArray *tasks;
@@ -224,34 +259,43 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 }
 
 - (void)pause {
-#ifndef USE_EGL
-#if !TARGET_OSX_OR_CATALYST
-    [self makeMainContextCurrent];
-    glFlush();
-#endif
-#endif
-
-    dispatch_semaphore_t semaphore = nil;
-
     [_condition lock];
-    if (!_suspendedFlag) {
-        _event = AsyncGLViewEventPause;
-        semaphore = dispatch_semaphore_create(0);
-        __weak typeof(self) weakSelf = self;
-        [_tasks addObject:^{
-            __strong typeof(weakSelf) strongSelf = weakSelf;
-            if (strongSelf != nil) {
-                [strongSelf makeRenderContextCurrent];
-                glFlush();
-            }
-            dispatch_semaphore_signal(semaphore);
-        }];
+    BOOL flushContexts = _contextsCreated && !_requestExitThread;
+    if (!_contextsCreated) {
+        _suspendedFlag = YES;
+    } else if (flushContexts && !_suspendedFlag && (_event & AsyncGLViewEventPause) == 0) {
+        _pauseTaskCount = _tasks.count;
+        _event |= AsyncGLViewEventPause;
         [_condition signal];
     }
     [_condition unlock];
 
-    if (semaphore != nil)
-        dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+#ifndef USE_EGL
+#if !TARGET_OSX_OR_CATALYST
+    if (flushContexts && [NSThread currentThread] != _renderThread) {
+        [self makeMainContextCurrent];
+        glFlush();
+    }
+#endif
+#endif
+
+    if ([NSThread currentThread] != _renderThread) {
+        [_condition lock];
+        while ((_event & AsyncGLViewEventPause) != 0)
+            [_condition wait];
+        [_condition unlock];
+    }
+}
+
+- (void)finishPause {
+    [self makeRenderContextCurrent];
+    glFlush();
+    [_condition lock];
+    _suspendedFlag = YES;
+    _pauseTaskCount = 0;
+    _event &= ~AsyncGLViewEventPause;
+    [_condition broadcast];
+    [_condition unlock];
 }
 
 - (void)resume {
@@ -358,9 +402,21 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 }
 
 - (void)enqueueTask:(void (^)(void))task {
+    [self enqueueTask:task requiringActiveContext:NO];
+}
+
+- (void)enqueueTask:(void (^)(void))task requiringActiveContext:(BOOL)requiresActiveContext {
     [_condition lock];
-    [_tasks addObject:task];
+    BOOL stopped = _requestExitThread || _renderThread.finished;
+    BOOL uninitialized = requiresActiveContext && !_contextsCreated;
+    BOOL paused = requiresActiveContext && (_suspendedFlag || (_event & AsyncGLViewEventPause) != 0);
+    if (!stopped && !uninitialized && !paused) {
+        [_tasks addObject:[task copy]];
+        [_condition signal];
+    }
     [_condition unlock];
+    if (stopped || uninitialized || paused)
+        [NSException raise:NSInternalInconsistencyException format:stopped ? @"The render thread has stopped" : (uninitialized ? @"The render context is not initialized" : @"Rendering is paused")];
 }
 
 - (void)render {
@@ -405,7 +461,7 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 - (void)commonSetup {
     _drawableSize = CGSizeZero;
     _lastRenderSize = CGSizeZero;
-    _shouldRender = YES;
+    _shouldRender = NO;
     _contextsCreated = NO;
     _contextState = AsyncGLViewContextStateNone;
     _requestExitThread = NO;
@@ -491,22 +547,39 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
             BOOL needsDrawn = NO;
 
             [_condition lock];
-            while (!_requestExitThread && (_suspendedFlag || _event == AsyncGLViewEventNone))
+            while (!_requestExitThread &&
+                   (_event & AsyncGLViewEventCreateRenderContext) == 0 &&
+                   (_suspendedFlag || (_event == AsyncGLViewEventNone && !(_contextsCreated && _tasks.count > 0))))
                 [_condition wait];
 
             BOOL requestExitThread = _requestExitThread;
             event = _event;
-            _event = AsyncGLViewEventNone;
+            _event &= AsyncGLViewEventPause;
 
+            BOOL paused = (event & AsyncGLViewEventPause) != 0;
+            BOOL canRunTasks = _contextsCreated && !_suspendedFlag;
             NSArray *tasks = nil;
-            if ([_tasks count] > 0) {
-                tasks = [_tasks copy];
+            NSUInteger taskCount = canRunTasks ? (paused ? _pauseTaskCount : _tasks.count) : 0;
+            if (taskCount > 0) {
+                NSRange range = NSMakeRange(0, taskCount);
+                tasks = [_tasks subarrayWithRange:range];
+                [_tasks removeObjectsInRange:range];
+            }
+            NSArray *discardedTasks = nil;
+            if (requestExitThread && _tasks.count > 0) {
+                discardedTasks = [_tasks copy];
                 [_tasks removeAllObjects];
             }
 
             [_condition unlock];
 
             if (requestExitThread) {
+                if (canRunTasks)
+                    [self runTasks:tasks];
+                if (paused)
+                    [self finishPause];
+                if (discardedTasks.count > 0)
+                    NSLog(@"Discarding %lu deferred tasks during shutdown", (unsigned long)discardedTasks.count);
                 [self clearGL];
                 dispatch_sync(dispatch_get_main_queue(), ^{
                     self.contextState = AsyncGLViewContextStateEnded;
@@ -516,14 +589,24 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 
             if ((event & AsyncGLViewEventCreateRenderContext) != 0) {
                 if ([self createRenderContext]) {
+                    [_condition lock];
                     _contextsCreated = YES;
-                    dispatch_sync(dispatch_get_main_queue(), ^{
+                    [_condition unlock];
+                    // Main may be waiting for pause; do not make initialization wait for main again.
+                    dispatch_async(dispatch_get_main_queue(), ^{
                         self.contextState = AsyncGLViewContextStateRenderContextCreated;
                         [self _startObservingViewStateNotifications];
                         [self _checkViewState];
                     });
                 }
                 else {
+                    [_condition lock];
+                    _requestExitThread = YES;
+                    NSArray *discardedTasks = [_tasks copy];
+                    [_tasks removeAllObjects];
+                    [_condition unlock];
+                    if (discardedTasks.count > 0)
+                        NSLog(@"Discarding %lu tasks because context creation failed", (unsigned long)discardedTasks.count);
                     [self clearGL];
                     dispatch_sync(dispatch_get_main_queue(), ^{
                         self.contextState = AsyncGLViewContextStateFailed;
@@ -532,25 +615,30 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
                 }
             }
 
-            BOOL paused = (event & AsyncGLViewEventPause) != 0;
-            if (paused) {
-                [_condition lock];
-                _suspendedFlag = YES;
-                [_condition unlock];
-            }
-
             if (_contextsCreated) {
                 if ((event & AsyncGLViewEventDraw) != 0 && !paused)
                     needsDrawn = YES;
 
-                for (void (^task)(void) in tasks)
-                    task();
+                [self runTasks:tasks];
             }
+            if (paused)
+                [self finishPause];
 
+            [_condition lock];
+            needsDrawn = needsDrawn && !_suspendedFlag && (_event & AsyncGLViewEventPause) == 0 && !_requestExitThread;
+            [_condition unlock];
             if (needsDrawn)
                 [self render];
         }
     }
+}
+
+- (void)runTasks:(NSArray *)tasks {
+    if (tasks.count == 0)
+        return;
+    [self makeRenderContextCurrent];
+    for (void (^task)(void) in tasks)
+        task();
 }
 
 #pragma mark - context creation
@@ -707,17 +795,9 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 
 - (BOOL)createRenderContext {
 #ifdef USE_EGL
-    EGLAttrib displayAttribs[] = { EGL_NONE };
-    _display = eglGetPlatformDisplay(EGL_PLATFORM_ANGLE_ANGLE, NULL, displayAttribs);
-    if (_display == EGL_NO_DISPLAY) {
-        NSLog(@"eglGetPlatformDisplay() returned error %d", eglGetError());
+    _display = AsyncGLAcquireDisplay();
+    if (_display == EGL_NO_DISPLAY)
         return NO;
-    }
-
-    if (!eglInitialize(_display, NULL, NULL)) {
-        NSLog(@"eglInitialize() returned error %d", eglGetError());
-        return NO;
-    }
 
     _renderContext = [self createEGLContextWithDisplay:_display api:_internalAPI sharedContext:EGL_NO_CONTEXT config:&_renderConfig depthSize:24 msaa:&_msaaEnabled];
 
@@ -1066,7 +1146,7 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
     }
 
     if (_display != EGL_NO_DISPLAY) {
-        eglTerminate(_display);
+        AsyncGLReleaseDisplay(_display);
         _display = EGL_NO_DISPLAY;
     }
 #else

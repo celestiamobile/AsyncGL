@@ -18,18 +18,28 @@
 }
 
 - (void)runTaskAsynchronously:(void(^)(void))task {
-    assert(_view != nil);
-    [_view enqueueTask:task];
+    [[self requiredView] enqueueTask:task];
 }
 
 - (void)runTaskSynchronously:(void(^)(void))task {
-    assert(_view != nil);
+    AsyncGLView *view = [self requiredView];
+    if ([NSThread currentThread] == view.renderThread) {
+        task();
+        return;
+    }
     dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
-    [_view enqueueTask:^{
+    [view enqueueTask:^{
         task();
         dispatch_semaphore_signal(semaphore);
-    }];
+    } requiringActiveContext:YES];
     dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+}
+
+- (AsyncGLView *)requiredView {
+    AsyncGLView *view = _view;
+    if (view == nil)
+        [NSException raise:NSInternalInconsistencyException format:@"The executor is not attached to a view"];
+    return view;
 }
 
 - (void)makeRenderContextCurrent {

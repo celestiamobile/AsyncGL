@@ -87,14 +87,22 @@
 }
 
 - (void)shutdown {
+    [self shutdownWithCompletion:nil];
+}
+
+- (void)shutdownWithCompletion:(void (^)(void))completion {
     NSAssert([NSThread isMainThread], @"Shutdown must be requested on the main thread");
-    if (_shuttingDown)
-        return;
-    _shuttingDown = YES;
-    self.ready = NO;
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
-    [self invalidateDisplayLink];
-    [_glView clearWithDelegate:self];
+    if (!_shuttingDown) {
+        _shuttingDown = YES;
+        self.ready = NO;
+        [[NSNotificationCenter defaultCenter] removeObserver:self];
+        [self invalidateDisplayLink];
+    }
+    if (_glView != nil) {
+        [_glView clearWithDelegate:self completion:completion];
+    } else if (completion != nil) {
+        dispatch_async(dispatch_get_main_queue(), completion);
+    }
 }
 
 - (void)invalidateDisplayLink {

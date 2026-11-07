@@ -46,6 +46,8 @@ NS_ASSUME_NONNULL_BEGIN
 // Call on main before releasing the controller. Cleanup finishes asynchronously
 // on the render thread, retaining the controller until clearGL returns.
 - (void)shutdown;
+// Completion runs on main after rendering and GL cleanup have finished.
+- (void)shutdownWithCompletion:(void (^ _Nullable)(void))completion NS_SWIFT_NAME(shutdown(completion:));
 
 - (void)setPreferredFramesPerSecond:(NSInteger)preferredFramesPerSecond API_AVAILABLE(ios(10.0), tvos(10.0), macos(14.0));
 

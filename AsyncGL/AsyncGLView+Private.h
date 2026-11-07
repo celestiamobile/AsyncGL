@@ -36,6 +36,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)render;
 - (void)clear;
 - (void)clearWithDelegate:(nullable id<AsyncGLViewDelegate>)delegate;
+- (void)clearWithDelegate:(nullable id<AsyncGLViewDelegate>)delegate completion:(void (^ _Nullable)(void))completion;
 - (void)pause;
 - (void)resume;
 - (void)makeRenderContextCurrent;

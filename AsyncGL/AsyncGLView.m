@@ -187,6 +187,8 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 @property (nonatomic) BOOL initializationDeferred;
 @property (nonatomic) BOOL didPrepareGL;
 @property (nonatomic) BOOL cleanupStarted;
+@property (nonatomic) BOOL cleanupFinished;
+@property (nonatomic) NSMutableArray *shutdownCompletions;
 @property (nonatomic) id<AsyncGLViewDelegate> cleanupDelegate;
 @property (nonatomic) NSMutableArray *tasks;
 @property (nonatomic) AsyncGLViewContextState contextState;
@@ -396,7 +398,19 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 }
 
 - (void)clearWithDelegate:(id<AsyncGLViewDelegate>)delegate {
+    [self clearWithDelegate:delegate completion:nil];
+}
+
+- (void)clearWithDelegate:(id<AsyncGLViewDelegate>)delegate completion:(void (^)(void))completion {
     [_condition lock];
+    if (_cleanupFinished) {
+        [_condition unlock];
+        if (completion != nil)
+            dispatch_async(dispatch_get_main_queue(), completion);
+        return;
+    }
+    if (completion != nil)
+        [_shutdownCompletions addObject:[completion copy]];
     if (!_cleanupStarted && _cleanupDelegate == nil && delegate != nil)
         _cleanupDelegate = delegate;
     _requestExitThread = YES;
@@ -476,6 +490,7 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
     _contextState = AsyncGLViewContextStateNone;
     _requestExitThread = NO;
     _tasks = [NSMutableArray array];
+    _shutdownCompletions = [NSMutableArray array];
     _isObservingNotifications = NO;
     _sampleCount = 0;
 #ifdef USE_EGL
@@ -649,6 +664,15 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
                 [self render];
         }
     }
+    [_condition lock];
+    _cleanupFinished = YES;
+    NSArray *completions = [_shutdownCompletions copy];
+    [_shutdownCompletions removeAllObjects];
+    [_condition unlock];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        for (void (^completion)(void) in completions)
+            completion();
+    });
 }
 
 - (void)runTasks:(NSArray *)tasks {

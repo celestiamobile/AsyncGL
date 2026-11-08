@@ -1,63 +1,171 @@
 {
   "default-configuration": "Debug",
-  "configurations": ["Debug", "Release"],
-  "localizations": {"development": "en", "supported": ["en"]},
-  "packages": [{"kind": "local", "path": "../../../AsyncGL", "traits": ["OpenGL"]}],
+  "configurations": [
+    "Debug",
+    "Release",
+  ],
+  "localizations": {
+    "development": "en",
+  },
+  "packages": [
+    {
+      "kind": "local",
+      "path": "../../../AsyncGL",
+      "traits": [
+        "OpenGL",
+      ],
+    },
+  ],
   "files": [
-    {"kind": "folder", "path": "App", "target-membership": ["NativeMac", "NativeUIKit"]},
-    {"kind": "group", "name": "Products", "children": [
-      {"path": "<PRODUCTS>/NativeMac.app", "type": "wrapper.application", "index": false},
-      {"path": "<PRODUCTS>/NativeUIKit.app", "type": "wrapper.application", "index": false}
-    ]}
+    { "kind": "folder", "path": "App", "target-membership": [ "NativeMac", "NativeUIKit" ] },
+    { "kind": "folder", "path": "PiPHost", "target-membership": [ "NativePiPMac", "NativePiPUIKit" ] },
+    {
+      "kind": "group",
+      "name": "Products",
+      "children": [
+        { "path": "<PRODUCTS>/NativeMac.app", "id": "9BC78D34CBEB27926B4C3782", "type": "wrapper.application", "index": false },
+        { "path": "<PRODUCTS>/NativeUIKit.app", "id": "4B875285DBE294DBB886B33E", "type": "wrapper.application", "index": false },
+        { "path": "<PRODUCTS>/NativePiPMac.app", "id": "7F5DC331B5FF474FD6E5E637", "type": "wrapper.application", "index": false },
+        { "path": "<PRODUCTS>/NativePiPUIKit.app", "id": "173162053746532B97EF854A", "type": "wrapper.application", "index": false },
+      ],
+    },
   ],
   "targets": [
     {
-      "name": "NativeMac",
-      "id": "A10000000000000000000001",
-      "product": "Products/NativeMac.app",
+      "name": "NativePiPMac",
+      "id": "A10000000000000000000003",
+      "product": "Products/NativePiPMac.app",
       "product-type": "application",
-      "build-phases": ["compile-sources", "frameworks", "resources"],
-      "package-product-members": [{"package": "AsyncGL", "product-name": "AsyncGL", "build-phase": {"build-phase": "frameworks"}}],
+      "build-phases": [
+        "compile-sources",
+        "frameworks",
+        "resources",
+      ],
+      "package-product-members": [
+        {
+          "package": "AsyncGL",
+          "product-name": "AsyncGL",
+          "build-phase": { "build-phase": "frameworks" },
+        },
+      ],
       "build-settings": {
+        "INFOPLIST_KEY_LSUIElement": "YES",
+        "PRODUCT_BUNDLE_IDENTIFIER": "space.celestia.AsyncGLRuntime.NativePiPMac",
         "SDKROOT": "macosx",
         "SUPPORTED_PLATFORMS": "macosx",
-        "PRODUCT_BUNDLE_IDENTIFIER": "space.celestia.AsyncGLRuntime.NativeMac",
-        "INFOPLIST_KEY_LSUIElement": "YES"
-      }
-    },
-    {
-      "name": "NativeUIKit",
-      "id": "A10000000000000000000002",
-      "product": "Products/NativeUIKit.app",
+      },
+    }, {
+      "name": "NativePiPUIKit",
+      "id": "A10000000000000000000004",
+      "product": "Products/NativePiPUIKit.app",
       "product-type": "application",
-      "build-phases": ["compile-sources", "frameworks", "resources"],
-      "package-product-members": [{"package": "AsyncGL", "product-name": "AsyncGL", "build-phase": {"build-phase": "frameworks"}}],
+      "build-phases": [
+        "compile-sources",
+        "frameworks",
+        "resources",
+      ],
+      "package-product-members": [
+        {
+          "package": "AsyncGL",
+          "product-name": "AsyncGL",
+          "build-phase": { "build-phase": "frameworks" },
+        },
+      ],
       "build-settings": {
+        "CODE_SIGN_IDENTITY": "Apple Development",
+        "CODE_SIGN_STYLE": "Automatic",
+        "DEVELOPMENT_TEAM": "22NR5428TD",
+        "INFOPLIST_FILE": "PiPInfo.plist",
+        "PRODUCT_BUNDLE_IDENTIFIER": "space.celestia.AsyncGLRuntime.NativePiPUIKit",
+        "PROVISIONING_PROFILE_SPECIFIER": "",
         "SDKROOT": "iphoneos",
         "SUPPORTED_PLATFORMS": "iphoneos iphonesimulator",
         "SUPPORTS_MACCATALYST": "YES",
         "TARGETED_DEVICE_FAMILY": "1,2",
+      },
+    }, {
+      "name": "NativeMac",
+      "id": "A10000000000000000000001",
+      "product": "Products/NativeMac.app",
+      "product-type": "application",
+      "build-phases": [
+        "compile-sources",
+        "frameworks",
+        "resources",
+      ],
+      "package-product-members": [
+        {
+          "package": "AsyncGL",
+          "product-name": "AsyncGL",
+          "build-phase": { "build-phase": "frameworks" },
+        },
+      ],
+      "build-settings": {
+        "INFOPLIST_KEY_LSUIElement": "YES",
+        "PRODUCT_BUNDLE_IDENTIFIER": "space.celestia.AsyncGLRuntime.NativeMac",
+        "SDKROOT": "macosx",
+        "SUPPORTED_PLATFORMS": "macosx",
+      },
+    }, {
+      "name": "NativeUIKit",
+      "id": "A10000000000000000000002",
+      "product": "Products/NativeUIKit.app",
+      "product-type": "application",
+      "build-phases": [
+        "compile-sources",
+        "frameworks",
+        "resources",
+      ],
+      "package-product-members": [
+        {
+          "package": "AsyncGL",
+          "product-name": "AsyncGL",
+          "build-phase": { "build-phase": "frameworks" },
+        },
+      ],
+      "build-settings": {
+        "CODE_SIGN_IDENTITY": "Apple Development",
+        "CODE_SIGN_STYLE": "Automatic",
+        "DEVELOPMENT_TEAM": "22NR5428TD",
+        "INFOPLIST_FILE": "UIKitInfo.plist",
         "PRODUCT_BUNDLE_IDENTIFIER": "space.celestia.AsyncGLRuntime.NativeUIKit",
-        "INFOPLIST_FILE": "UIKitInfo.plist"
-      }
-    }
+        "PROVISIONING_PROFILE_SPECIFIER": "",
+        "SDKROOT": "iphoneos",
+        "SUPPORTED_PLATFORMS": "iphoneos iphonesimulator",
+        "SUPPORTS_MACCATALYST": "YES",
+        "TARGETED_DEVICE_FAMILY": "1,2",
+      },
+    },
   ],
   "build-settings": {
     "CLANG_ENABLE_MODULES": "YES",
     "CLANG_ENABLE_OBJC_ARC": "YES",
-    "GCC_C_LANGUAGE_STANDARD": "c11",
-    "GCC_PREPROCESSOR_DEFINITIONS": ["$(inherited)", "HOST_ANGLE=0"],
-    "HEADER_SEARCH_PATHS": ["$(inherited)", "$(SRCROOT)/../../AsyncGL"],
-    "GENERATE_INFOPLIST_FILE": "YES",
-    "PRODUCT_NAME": "$(TARGET_NAME)",
-    "MACOSX_DEPLOYMENT_TARGET": "13.0",
-    "IPHONEOS_DEPLOYMENT_TARGET": "16.0",
-    "MARKETING_VERSION": "1.0",
-    "CURRENT_PROJECT_VERSION": "1",
-    "CODE_SIGN_IDENTITY": "-",
     "CODE_SIGNING_REQUIRED": "NO",
+    "CODE_SIGN_IDENTITY": "-",
+    "CURRENT_PROJECT_VERSION": "1",
     "ENABLE_HARDENED_RUNTIME": "NO",
-    "LD_RUNPATH_SEARCH_PATHS": ["$(inherited)", "@executable_path/Frameworks", "@executable_path/../Frameworks"],
-    "OTHER_LDFLAGS": ["$(inherited)", "-ObjC"]
-  }
+    "GCC_C_LANGUAGE_STANDARD": "c11",
+    "GCC_PREPROCESSOR_DEFINITIONS": [
+      "$(inherited)",
+      "HOST_ANGLE=0",
+    ],
+    "GENERATE_INFOPLIST_FILE": "YES",
+    "HEADER_SEARCH_PATHS": [
+      "$(inherited)",
+      "$(SRCROOT)/../../AsyncGL",
+    ],
+    "IPHONEOS_DEPLOYMENT_TARGET": "16.0",
+    "LD_RUNPATH_SEARCH_PATHS": [
+      "$(inherited)",
+      "@executable_path/Frameworks",
+      "@executable_path/../Frameworks",
+    ],
+    "MACOSX_DEPLOYMENT_TARGET": "13.0",
+    "MARKETING_VERSION": "1.0",
+    "OTHER_LDFLAGS": [
+      "$(inherited)",
+      "-ObjC",
+    ],
+    "PRODUCT_NAME": "$(TARGET_NAME)",
+  },
 }

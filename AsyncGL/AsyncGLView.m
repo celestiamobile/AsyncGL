@@ -7,12 +7,15 @@
 
 #import "AsyncGLView+Private.h"
 #import "AsyncGLMirroring.h"
+#import "AsyncGLSampleBufferOutput.h"
+#include <math.h>
 
 typedef NS_OPTIONS(NSUInteger, AsyncGLViewEvent) {
     AsyncGLViewEventNone                = 0,
     AsyncGLViewEventCreateRenderContext = 1 << 0,
     AsyncGLViewEventDraw                = 1 << 1,
     AsyncGLViewEventPause               = 1 << 2,
+    AsyncGLViewEventUpdateOutputs       = 1 << 3,
 };
 
 typedef NS_ENUM(NSUInteger, AsyncGLViewContextState) {
@@ -187,6 +190,9 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 @property (nonatomic) GLsizei sampleCount;
 @property (nonatomic) AsyncGLMirroringTarget *mirroringTarget;
 @property (nonatomic) AsyncGLMirroringTarget *activeMirroringTarget;
+@property (nonatomic) AsyncGLSampleBufferOutput *sampleBufferOutput;
+@property (nonatomic) AsyncGLSampleBufferOutput *activeSampleBufferOutput;
+@property (nonatomic) BOOL shouldPresent;
 #ifdef USE_EGL
 @property (nonatomic) CAMetalLayer *metalLayer;
 @property (nonatomic) EGLRenderingAPI internalAPI;
@@ -288,6 +294,7 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 
 - (void)finishPause {
     [self makeRenderContextCurrent];
+    [_activeSampleBufferOutput finishPendingWork];
     glFlush();
     [_condition lock];
     _suspendedFlag = YES;
@@ -338,7 +345,7 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
     }
 #endif
     _mirroringTarget = view.target;
-    _event |= AsyncGLViewEventDraw;
+    _event |= AsyncGLViewEventUpdateOutputs | AsyncGLViewEventDraw;
     [_condition signal];
     [_condition unlock];
     return view;
@@ -348,7 +355,53 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
     NSAssert([NSThread isMainThread], @"Mirroring must be stopped on main");
     [_condition lock];
     _mirroringTarget = nil;
-    _event |= AsyncGLViewEventDraw;
+    _event |= AsyncGLViewEventUpdateOutputs;
+    [_condition signal];
+    [_condition unlock];
+}
+
+- (BOOL)startSampleBufferOutputWithMaximumSize:(CGSize)maximumSize
+                                      handler:(void (^)(CMSampleBufferRef))handler
+                                        error:(NSError **)error {
+    NSAssert(NSThread.isMainThread, @"Sample-buffer output must be started on main");
+    NSString *reason = nil;
+#ifdef USE_EGL
+    if (_api != AsyncGLAPIOpenGLES3)
+        reason = @"Sample-buffer output requires OpenGL ES 3.";
+#elif TARGET_OSX_OR_CATALYST
+    if (_api != AsyncGLAPIOpenGLCore41)
+        reason = @"Sample-buffer output requires OpenGL core 4.1.";
+#else
+    if (_api != AsyncGLAPIOpenGLES3)
+        reason = @"Sample-buffer output requires OpenGL ES 3.";
+#endif
+    if (!isfinite(maximumSize.width) || !isfinite(maximumSize.height) ||
+        maximumSize.width < 1 || maximumSize.height < 1 ||
+        maximumSize.width > 4096 || maximumSize.height > 4096 || handler == nil)
+        reason = @"Sample-buffer output requires a handler and dimensions between 1 and 4096 pixels.";
+    [_condition lock];
+    if (_requestExitThread)
+        reason = @"The render thread has stopped.";
+    if (reason == nil) {
+        _sampleBufferOutput = [[AsyncGLSampleBufferOutput alloc] initWithMaximumSize:maximumSize handler:handler];
+        _event |= AsyncGLViewEventUpdateOutputs | AsyncGLViewEventDraw;
+        [_condition signal];
+    }
+    [_condition unlock];
+    if (reason != nil) {
+        if (error != NULL)
+            *error = [NSError errorWithDomain:@"AsyncGLSampleBufferOutput" code:1 userInfo:@{NSLocalizedDescriptionKey: reason}];
+        NSLog(@"%@", reason);
+        return NO;
+    }
+    return YES;
+}
+
+- (void)stopSampleBufferOutput {
+    NSAssert(NSThread.isMainThread, @"Sample-buffer output must be stopped on main");
+    [_condition lock];
+    _sampleBufferOutput = nil;
+    _event |= AsyncGLViewEventUpdateOutputs;
     [_condition signal];
     [_condition unlock];
 }
@@ -481,6 +534,23 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
         [NSException raise:NSInternalInconsistencyException format:stopped ? @"The render thread has stopped" : (uninitialized ? @"The render context is not initialized" : @"Rendering is paused")];
 }
 
+- (void)updateOutputs {
+    [_condition lock];
+    AsyncGLMirroringTarget *target = _mirroringTarget;
+    AsyncGLSampleBufferOutput *output = _sampleBufferOutput;
+    [_condition unlock];
+    if (_activeMirroringTarget != target) {
+        [self makeRenderContextCurrent];
+        [_activeMirroringTarget clear];
+        _activeMirroringTarget = target;
+    }
+    if (_activeSampleBufferOutput != output) {
+        [self makeRenderContextCurrent];
+        [_activeSampleBufferOutput clear];
+        _activeSampleBufferOutput = output;
+    }
+}
+
 - (void)render {
     if (@available(iOS 18.0, tvOS 18.0, macOS 15.0, *)) {
         os_unfair_lock_lock_with_flags(&_renderLock, OS_UNFAIR_LOCK_FLAG_ADAPTIVE_SPIN);
@@ -489,16 +559,8 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
     }
     CGSize size = _drawableSize;
     BOOL shouldRender = _shouldRender;
+    BOOL shouldPresent = _shouldPresent;
     os_unfair_lock_unlock(&_renderLock);
-
-    [_condition lock];
-    AsyncGLMirroringTarget *target = _mirroringTarget;
-    [_condition unlock];
-    if (_activeMirroringTarget != target) {
-        [self makeRenderContextCurrent];
-        [_activeMirroringTarget clear];
-        _activeMirroringTarget = target;
-    }
 
     if (shouldRender) {
         if (!CGSizeEqualToSize(_lastRenderSize, size)) {
@@ -514,6 +576,11 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 
         [self makeRenderContextCurrent];
         [self _drawGL:size];
+#ifdef USE_EGL
+        [_activeSampleBufferOutput drawFromFramebuffer:0 size:size];
+#else
+        [_activeSampleBufferOutput drawFromFramebuffer:_framebuffer size:size];
+#endif
         if (_activeMirroringTarget != nil) {
 #ifdef USE_EGL
             if (![_activeMirroringTarget drawFromFramebuffer:0 size:size display:_display config:_renderConfig context:_renderContext sourceSurface:_renderSurface])
@@ -521,6 +588,10 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 #else
             [_activeMirroringTarget drawFromFramebuffer:_framebuffer size:size];
 #endif
+        }
+        if (!shouldPresent) {
+            glFlush();
+            return;
         }
     #ifdef USE_EGL
         eglSwapBuffers(_display, _renderSurface);
@@ -541,6 +612,7 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
     _drawableSize = CGSizeZero;
     _lastRenderSize = CGSizeZero;
     _shouldRender = NO;
+    _shouldPresent = NO;
     _contextsCreated = NO;
     _contextState = AsyncGLViewContextStateNone;
     _requestExitThread = NO;
@@ -628,13 +700,22 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 
             [_condition lock];
             while (!_requestExitThread &&
-                   (_event & AsyncGLViewEventCreateRenderContext) == 0 &&
-                   (_suspendedFlag || (_event == AsyncGLViewEventNone && !(_contextsCreated && _tasks.count > 0))))
-                [_condition wait];
+                   (_event & (AsyncGLViewEventCreateRenderContext | AsyncGLViewEventUpdateOutputs)) == 0 &&
+                   (_suspendedFlag || (_event == AsyncGLViewEventNone && !(_contextsCreated && _tasks.count > 0)))) {
+                if (_contextsCreated && !_suspendedFlag && [_activeSampleBufferOutput hasPendingFrames]) {
+                    if (![_condition waitUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.001]])
+                        break;
+                } else {
+                    [_condition wait];
+                }
+            }
 
             BOOL requestExitThread = _requestExitThread;
             event = _event;
-            _event &= AsyncGLViewEventPause;
+            // Servicing output changes must not consume a draw queued during pause.
+            _event &= AsyncGLViewEventPause | (_suspendedFlag ? AsyncGLViewEventDraw : 0);
+            if (_suspendedFlag)
+                event &= ~AsyncGLViewEventDraw;
 
             BOOL paused = (event & AsyncGLViewEventPause) != 0;
             BOOL canRunTasks = _contextsCreated && !_suspendedFlag;
@@ -704,6 +785,7 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
             }
 
             if (_contextsCreated) {
+                [self updateOutputs];
                 if ((event & AsyncGLViewEventDraw) != 0 && !paused)
                     needsDrawn = YES;
 
@@ -713,10 +795,15 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
                 [self finishPause];
 
             [_condition lock];
-            needsDrawn = needsDrawn && !_suspendedFlag && (_event & AsyncGLViewEventPause) == 0 && !_requestExitThread;
+            BOOL canRender = !_suspendedFlag && (_event & AsyncGLViewEventPause) == 0 && !_requestExitThread;
+            needsDrawn = needsDrawn && canRender;
             [_condition unlock];
             if (needsDrawn)
                 [self render];
+            if (canRender && [_activeSampleBufferOutput hasPendingFrames]) {
+                [self makeRenderContextCurrent];
+                [_activeSampleBufferOutput pollPendingFrames];
+            }
         }
     }
     [_condition lock];
@@ -1190,7 +1277,13 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
     __block id<AsyncGLViewDelegate> delegate = _cleanupDelegate ?: _delegate;
     _cleanupDelegate = nil;
     _mirroringTarget = nil;
+    _sampleBufferOutput = nil;
     [_condition unlock];
+    if (_activeSampleBufferOutput != nil) {
+        [self makeRenderContextCurrent];
+        [_activeSampleBufferOutput clear];
+        _activeSampleBufferOutput = nil;
+    }
     if (_activeMirroringTarget != nil) {
         [self makeRenderContextCurrent];
         [_activeMirroringTarget clear];
@@ -1324,6 +1417,10 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 }
 
 #pragma mark - view checker
+- (BOOL)_allowsOffscreenRendering {
+    return NO;
+}
+
 - (void)_startObservingViewStateNotifications {
     if (_isObservingNotifications)
         return;
@@ -1377,7 +1474,8 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
         os_unfair_lock_lock(&_renderLock);
     }
     _drawableSize = newSize;
-    _shouldRender = shouldRender;
+    _shouldPresent = shouldRender;
+    _shouldRender = shouldRender || ([self _allowsOffscreenRendering] && frameSize.width > 0 && frameSize.height > 0);
     os_unfair_lock_unlock(&_renderLock);
 }
 

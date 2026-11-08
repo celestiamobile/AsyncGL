@@ -1,63 +1,199 @@
 {
   "default-configuration": "Debug",
-  "configurations": ["Debug", "Release"],
-  "localizations": {"development": "en", "supported": ["en"]},
-  "packages": [{"kind": "local", "path": "../../../AsyncGL", "traits": ["ANGLE"]}],
+  "configurations": [
+    "Debug",
+    "Release",
+  ],
+  "localizations": {
+    "development": "en",
+  },
+  "packages": [
+    {
+      "kind": "local",
+      "path": "../../../AsyncGL",
+      "traits": [
+        "ANGLE",
+      ],
+    },
+  ],
   "files": [
-    {"kind": "folder", "path": "App", "target-membership": ["ANGLEMac", "ANGLEUIKit"]},
-    {"kind": "group", "name": "Products", "children": [
-      {"path": "<PRODUCTS>/ANGLEMac.app", "type": "wrapper.application", "index": false},
-      {"path": "<PRODUCTS>/ANGLEUIKit.app", "type": "wrapper.application", "index": false}
-    ]}
+    { "kind": "folder", "path": "App", "target-membership": [ "ANGLEMac", "ANGLEUIKit" ] },
+    { "kind": "folder", "path": "PiPHost", "target-membership": [ "ANGLEPiPMac", "ANGLEPiPUIKit" ] },
+    { "kind": "folder", "path": "MacPiPPrivate", "target-membership": [ "ANGLEPiPMac", "CatalystPiPBridge" ] },
+    { "kind": "folder", "path": "CatalystPiPBridge", "target-membership": [ "CatalystPiPBridge" ] },
+    {
+      "kind": "group",
+      "name": "Products",
+      "children": [
+        { "path": "<PRODUCTS>/ANGLEMac.app", "id": "1696FABCE09EB16CC3EEA0F4", "type": "wrapper.application", "index": false },
+        { "path": "<PRODUCTS>/ANGLEUIKit.app", "id": "68B13CFC3A5110C2C39609B8", "type": "wrapper.application", "index": false },
+        { "path": "<PRODUCTS>/ANGLEPiPMac.app", "id": "5A8108FF9C81E79A08310189", "type": "wrapper.application", "index": false },
+        { "path": "<PRODUCTS>/ANGLEPiPUIKit.app", "id": "17755BF303C5BE901FC41EC1", "type": "wrapper.application", "index": false },
+        { "path": "<PRODUCTS>/CatalystPiPBridge.bundle", "id": "A30000000000000000000005", "type": "wrapper.cfbundle", "index": false, "target-membership": [ { "build-phase": "ANGLEPiPUIKit/copy/Embed PiP Bridge", "platforms": [ "maccatalyst" ], "code-sign-on-copy": true } ] },
+      ],
+    },
   ],
   "targets": [
     {
+      "name": "ANGLEPiPMac",
+      "id": "A20000000000000000000003",
+      "product": "Products/ANGLEPiPMac.app",
+      "product-type": "application",
+      "build-phases": [
+        "compile-sources",
+        "frameworks",
+        "resources",
+      ],
+      "package-product-members": [
+        {
+          "package": "AsyncGL",
+          "product-name": "AsyncGL",
+          "build-phase": { "build-phase": "frameworks" },
+        },
+      ],
+      "build-settings": {
+        "GCC_PREPROCESSOR_DEFINITIONS": [
+          "$(inherited)",
+          "PIP_PRIVATE_SPI=1",
+        ],
+        "INFOPLIST_KEY_LSUIElement": "YES",
+        "PRODUCT_BUNDLE_IDENTIFIER": "space.celestia.AsyncGLRuntime.ANGLEPiPMac",
+        "SDKROOT": "macosx",
+        "SUPPORTED_PLATFORMS": "macosx",
+      },
+    }, {
+      "name": "ANGLEPiPUIKit",
+      "id": "A20000000000000000000004",
+      "product": "Products/ANGLEPiPUIKit.app",
+      "product-type": "application",
+      "dependencies": [
+        { "target": "CatalystPiPBridge", "platforms": [ "maccatalyst" ] },
+      ],
+      "build-phases": [
+        "compile-sources",
+        "frameworks",
+        "resources",
+        { "kind": "copy", "name": "Embed PiP Bridge", "bundle-base-path": "plugins-directory" },
+      ],
+      "package-product-members": [
+        {
+          "package": "AsyncGL",
+          "product-name": "AsyncGL",
+          "build-phase": { "build-phase": "frameworks" },
+        },
+      ],
+      "build-settings": {
+        "GCC_PREPROCESSOR_DEFINITIONS": [
+          "$(inherited)",
+          "PIP_CATALYST_PRIVATE_SPI=1",
+        ],
+        "CODE_SIGN_IDENTITY": "Apple Development",
+        "CODE_SIGN_STYLE": "Automatic",
+        "DEVELOPMENT_TEAM": "22NR5428TD",
+        "INFOPLIST_FILE": "PiPInfo.plist",
+        "PRODUCT_BUNDLE_IDENTIFIER": "space.celestia.AsyncGLRuntime.ANGLEPiPUIKit",
+        "PROVISIONING_PROFILE_SPECIFIER": "",
+        "SDKROOT": "iphoneos",
+        "SUPPORTED_PLATFORMS": "iphoneos iphonesimulator",
+        "SUPPORTS_MACCATALYST": "YES",
+        "TARGETED_DEVICE_FAMILY": "1,2,6",
+      },
+    }, {
+      "name": "CatalystPiPBridge",
+      "id": "A20000000000000000000005",
+      "product": "Products/CatalystPiPBridge.bundle",
+      "product-type": "bundle",
+      "build-phases": [ "compile-sources", "frameworks", "resources" ],
+      "build-settings": {
+        "CODE_SIGNING_ALLOWED": "NO",
+        "INFOPLIST_KEY_NSPrincipalClass": "CatalystPiPBridge",
+        "INSTALL_PATH": "$(LOCAL_LIBRARY_DIR)/Bundles",
+        "PRODUCT_BUNDLE_IDENTIFIER": "space.celestia.AsyncGLRuntime.CatalystPiPBridge",
+        "SDKROOT": "macosx",
+        "SUPPORTED_PLATFORMS": "macosx",
+        "SUPPORTS_MACCATALYST": "NO",
+        "SKIP_INSTALL": "YES",
+        "WRAPPER_EXTENSION": "bundle",
+      },
+    }, {
       "name": "ANGLEMac",
       "id": "A20000000000000000000001",
       "product": "Products/ANGLEMac.app",
       "product-type": "application",
-      "build-phases": ["compile-sources", "frameworks", "resources"],
-      "package-product-members": [{"package": "AsyncGL", "product-name": "AsyncGL", "build-phase": {"build-phase": "frameworks"}}],
+      "build-phases": [
+        "compile-sources",
+        "frameworks",
+        "resources",
+      ],
+      "package-product-members": [
+        {
+          "package": "AsyncGL",
+          "product-name": "AsyncGL",
+          "build-phase": { "build-phase": "frameworks" },
+        },
+      ],
       "build-settings": {
+        "INFOPLIST_KEY_LSUIElement": "YES",
+        "PRODUCT_BUNDLE_IDENTIFIER": "space.celestia.AsyncGLRuntime.ANGLEMac",
         "SDKROOT": "macosx",
         "SUPPORTED_PLATFORMS": "macosx",
-        "PRODUCT_BUNDLE_IDENTIFIER": "space.celestia.AsyncGLRuntime.ANGLEMac",
-        "INFOPLIST_KEY_LSUIElement": "YES"
-      }
-    },
-    {
+      },
+    }, {
       "name": "ANGLEUIKit",
       "id": "A20000000000000000000002",
       "product": "Products/ANGLEUIKit.app",
       "product-type": "application",
-      "build-phases": ["compile-sources", "frameworks", "resources"],
-      "package-product-members": [{"package": "AsyncGL", "product-name": "AsyncGL", "build-phase": {"build-phase": "frameworks"}}],
+      "build-phases": [
+        "compile-sources",
+        "frameworks",
+        "resources",
+      ],
+      "package-product-members": [
+        {
+          "package": "AsyncGL",
+          "product-name": "AsyncGL",
+          "build-phase": { "build-phase": "frameworks" },
+        },
+      ],
       "build-settings": {
+        "INFOPLIST_FILE": "UIKitInfo.plist",
+        "PRODUCT_BUNDLE_IDENTIFIER": "space.celestia.AsyncGLRuntime.ANGLEUIKit",
         "SDKROOT": "iphoneos",
         "SUPPORTED_PLATFORMS": "iphoneos iphonesimulator",
         "SUPPORTS_MACCATALYST": "YES",
         "TARGETED_DEVICE_FAMILY": "1,2",
-        "PRODUCT_BUNDLE_IDENTIFIER": "space.celestia.AsyncGLRuntime.ANGLEUIKit",
-        "INFOPLIST_FILE": "UIKitInfo.plist"
-      }
-    }
+      },
+    },
   ],
   "build-settings": {
     "CLANG_ENABLE_MODULES": "YES",
     "CLANG_ENABLE_OBJC_ARC": "YES",
-    "GCC_C_LANGUAGE_STANDARD": "c11",
-    "GCC_PREPROCESSOR_DEFINITIONS": ["$(inherited)", "HOST_ANGLE=1"],
-    "HEADER_SEARCH_PATHS": ["$(inherited)", "$(SRCROOT)/../../AsyncGL"],
-    "GENERATE_INFOPLIST_FILE": "YES",
-    "PRODUCT_NAME": "$(TARGET_NAME)",
-    "MACOSX_DEPLOYMENT_TARGET": "13.0",
-    "IPHONEOS_DEPLOYMENT_TARGET": "16.0",
-    "MARKETING_VERSION": "1.0",
-    "CURRENT_PROJECT_VERSION": "1",
-    "CODE_SIGN_IDENTITY": "-",
     "CODE_SIGNING_REQUIRED": "NO",
+    "CODE_SIGN_IDENTITY": "-",
+    "CURRENT_PROJECT_VERSION": "1",
     "ENABLE_HARDENED_RUNTIME": "NO",
-    "LD_RUNPATH_SEARCH_PATHS": ["$(inherited)", "@executable_path/Frameworks", "@executable_path/../Frameworks"],
-    "OTHER_LDFLAGS": ["$(inherited)", "-ObjC"]
-  }
+    "GCC_C_LANGUAGE_STANDARD": "c11",
+    "GCC_PREPROCESSOR_DEFINITIONS": [
+      "$(inherited)",
+      "HOST_ANGLE=1",
+    ],
+    "GENERATE_INFOPLIST_FILE": "YES",
+    "HEADER_SEARCH_PATHS": [
+      "$(inherited)",
+      "$(SRCROOT)/../../AsyncGL",
+    ],
+    "IPHONEOS_DEPLOYMENT_TARGET": "16.0",
+    "LD_RUNPATH_SEARCH_PATHS": [
+      "$(inherited)",
+      "@executable_path/Frameworks",
+      "@executable_path/../Frameworks",
+    ],
+    "MACOSX_DEPLOYMENT_TARGET": "13.0",
+    "MARKETING_VERSION": "1.0",
+    "OTHER_LDFLAGS": [
+      "$(inherited)",
+      "-ObjC",
+    ],
+    "PRODUCT_NAME": "$(TARGET_NAME)",
+  },
 }

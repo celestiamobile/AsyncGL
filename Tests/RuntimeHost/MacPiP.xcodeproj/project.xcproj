@@ -1,0 +1,81 @@
+{
+  "default-configuration": "Debug",
+  "configurations": [
+    "Debug",
+    "Release",
+  ],
+  "localizations": {
+    "development": "en",
+  },
+  "files": [
+    { "kind": "folder", "path": "MacPiP", "target-membership": [ "MacPiP", "MacPiPPrivate" ] },
+    { "kind": "folder", "path": "MacPiPPlayer", "target-membership": [ "MacPiPPlayer" ] },
+    { "kind": "folder", "path": "MacPiPPrivate", "target-membership": [ "MacPiPPrivate" ] },
+    {
+      "kind": "group",
+      "name": "Products",
+      "children": [
+        { "path": "<PRODUCTS>/MacPiP.app", "id": "B20000000000000000000001", "type": "wrapper.application", "index": false },
+        { "path": "<PRODUCTS>/MacPiPPlayer.app", "id": "B20000000000000000000003", "type": "wrapper.application", "index": false },
+        { "path": "<PRODUCTS>/MacPiPPrivate.app", "id": "B20000000000000000000005", "type": "wrapper.application", "index": false },
+      ],
+    },
+  ],
+  "targets": [
+    {
+      "name": "MacPiPPrivate",
+      "id": "B20000000000000000000006",
+      "product": "Products/MacPiPPrivate.app",
+      "product-type": "application",
+      "build-phases": [
+        "compile-sources",
+        "frameworks",
+        "resources",
+      ],
+      "build-settings": {
+        "GCC_PREPROCESSOR_DEFINITIONS": [
+          "$(inherited)",
+          "PIP_PRIVATE_SPI=1",
+        ],
+      },
+    },
+    {
+      "name": "MacPiPPlayer",
+      "id": "B20000000000000000000004",
+      "product": "Products/MacPiPPlayer.app",
+      "product-type": "application",
+      "build-phases": [
+        "compile-sources",
+        "frameworks",
+        "resources",
+      ],
+    },
+    {
+      "name": "MacPiP",
+      "id": "B20000000000000000000002",
+      "product": "Products/MacPiP.app",
+      "product-type": "application",
+      "build-phases": [
+        "compile-sources",
+        "frameworks",
+        "resources",
+      ],
+    },
+  ],
+  "build-settings": {
+    "CLANG_ENABLE_MODULES": "YES",
+    "CLANG_ENABLE_OBJC_ARC": "YES",
+    "CODE_SIGNING_REQUIRED": "NO",
+    "CODE_SIGN_IDENTITY": "-",
+    "CURRENT_PROJECT_VERSION": "1",
+    "GCC_C_LANGUAGE_STANDARD": "c11",
+    "GENERATE_INFOPLIST_FILE": "YES",
+    "INFOPLIST_KEY_NSHighResolutionCapable": "YES",
+    "MACOSX_DEPLOYMENT_TARGET": "13.0",
+    "MARKETING_VERSION": "1.0",
+    "PRODUCT_BUNDLE_IDENTIFIER": "space.celestia.AsyncGLRuntime.$(TARGET_NAME)",
+    "PRODUCT_NAME": "$(TARGET_NAME)",
+    "SDKROOT": "macosx",
+    "SUPPORTED_PLATFORMS": "macosx",
+  },
+}

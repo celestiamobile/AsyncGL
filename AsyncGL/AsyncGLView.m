@@ -365,6 +365,9 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
                                         error:(NSError **)error {
     NSAssert(NSThread.isMainThread, @"Sample-buffer output must be started on main");
     NSString *reason = nil;
+#if !defined(USE_EGL) && TARGET_OS_MACCATALYST
+    reason = @"Sample-buffer output is unavailable with native OpenGL on Mac Catalyst. Use ANGLE instead.";
+#else
 #ifdef USE_EGL
     if (_api != AsyncGLAPIOpenGLES3)
         reason = @"Sample-buffer output requires OpenGL ES 3.";
@@ -388,6 +391,7 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
         [_condition signal];
     }
     [_condition unlock];
+#endif
     if (reason != nil) {
         if (error != NULL)
             *error = [NSError errorWithDomain:@"AsyncGLSampleBufferOutput" code:1 userInfo:@{NSLocalizedDescriptionKey: reason}];

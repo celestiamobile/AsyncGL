@@ -49,6 +49,7 @@ NS_ASSUME_NONNULL_BEGIN
 // Maximum dimensions must be finite and between 1 and 4096 pixels. A new
 // output replaces the old one; stop is asynchronous. Runtime failures log and
 // suspend this output until it is replaced. This does not enable background GL.
+// Native OpenGL on Mac Catalyst is unsupported and returns NO with an error.
 - (BOOL)startSampleBufferOutputWithMaximumSize:(CGSize)maximumSize
                                       handler:(void (NS_SWIFT_SENDABLE ^)(CMSampleBufferRef sampleBuffer))handler
                                         error:(NSError * _Nullable * _Nullable)error;

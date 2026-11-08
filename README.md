@@ -40,6 +40,8 @@ repository. The automated GPU and lifecycle tests remain included.
 
 `startSampleBufferOutputWithMaximumSize:handler:error:` exports native GLES 3,
 CGL 4.1, or ANGLE GLES 3 frames as GPU-backed BGRA `CMSampleBuffer`s.
+Native OpenGL on Mac Catalyst is unsupported because its CoreVideo OpenGL
+texture-cache APIs are unavailable; start returns an error. Use ANGLE on Catalyst.
 ANGLE requires `EGL_ANGLE_iosurface_client_buffer` with a 2D texture target
 (the Metal backend). It imports each pixel buffer's IOSurface into an EGL
 pbuffer, renders through its texture, and releases the EGL texture binding before

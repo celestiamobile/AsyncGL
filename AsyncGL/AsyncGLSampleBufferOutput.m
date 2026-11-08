@@ -4,6 +4,9 @@
 //
 
 #import "AsyncGLSampleBufferOutput.h"
+
+#if defined(USE_EGL) || !TARGET_OS_MACCATALYST
+
 @import CoreVideo;
 #include <math.h>
 #include <string.h>
@@ -401,3 +404,5 @@ typedef CVOpenGLESTextureRef OutputTexture;
     _captureSize = _outputSize = CGSizeZero;
 }
 @end
+
+#endif

@@ -39,6 +39,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)clearWithDelegate:(nullable id<AsyncGLViewDelegate>)delegate completion:(void (^ _Nullable)(void))completion;
 - (void)pause;
 - (void)resume;
+// Override only in isolated hosts investigating PiP background GPU behavior.
+- (BOOL)_allowsOffscreenRendering;
+- (void)_checkViewState;
 - (void)makeRenderContextCurrent;
 - (void)prepareForDrawing:(void (NS_NOESCAPE ^ _Nullable)(void))draw resolve:(void (NS_NOESCAPE ^ _Nullable)(void))resolve NS_SWIFT_NONISOLATED;
 

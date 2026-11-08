@@ -11,6 +11,8 @@
 @import Cocoa;
 #endif
 
+@import CoreMedia;
+
 NS_ASSUME_NONNULL_BEGIN
 
 #if !TARGET_OS_OSX
@@ -33,6 +35,19 @@ NS_ASSUME_NONNULL_BEGIN
 - (UIView *)startMirroring;
 #endif
 - (void)stopMirroring;
+
+// Native GLES 3 / desktop GL 4.1, or ANGLE GLES 3 with IOSurface 2D texture support
+// (Metal backend). Call on main; the handler runs on the
+// render thread after GPU completion. Retain the sample if using it afterward.
+// The handler must not wait for main or change GL state. Slow consumers cause
+// frames to be dropped rather than growing an unbounded buffer queue.
+// Maximum dimensions must be finite and between 1 and 4096 pixels. A new
+// output replaces the old one; stop is asynchronous. Runtime failures log and
+// suspend this output until it is replaced. This does not enable background GL.
+- (BOOL)startSampleBufferOutputWithMaximumSize:(CGSize)maximumSize
+                                      handler:(void (^)(CMSampleBufferRef sampleBuffer))handler
+                                        error:(NSError * _Nullable * _Nullable)error;
+- (void)stopSampleBufferOutput;
 
 @end
 

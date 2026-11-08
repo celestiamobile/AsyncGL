@@ -11,7 +11,7 @@ mkdir "$work/bin" "$work/Frameworks"
 trap 'rm -f "$work/bin/mirroring-tests" "$work/bin/native-mirroring-tests" "$work/Frameworks/libGLESv2.framework"; rmdir "$work/bin" "$work/Frameworks" "$work"' EXIT
 
 xcrun clang -fobjc-arc -fmodules -DGL_SILENCE_DEPRECATION \
-    -I "$root/AsyncGL" "$root/Tests/NativeMirroringTests.m" \
+    -I "$root/AsyncGL" "$root/Tests/NativeMirroringTests.m" "$root/AsyncGL/AsyncGLSampleBufferOutput.m" \
     -framework Cocoa -framework QuartzCore -framework OpenGL \
     -o "$work/bin/native-mirroring-tests"
 "$work/bin/native-mirroring-tests"
@@ -22,7 +22,7 @@ ln -s "$gles/libGLESv2.framework" "$work/Frameworks/libGLESv2.framework"
 xcrun clang -fobjc-arc -fmodules -DGL_SILENCE_DEPRECATION \
     -DEGL_EGLEXT_PROTOTYPES -DGL_GLEXT_PROTOTYPES \
     -I "$root/AsyncGL" -F "$egl" -F "$gles" \
-    "$root/Tests/MirroringTests.m" \
+    "$root/Tests/MirroringTests.m" "$root/AsyncGL/AsyncGLSampleBufferOutput.m" \
     -framework Cocoa -framework QuartzCore -framework libEGL -framework libGLESv2 \
     "-Wl,-rpath,$egl" "-Wl,-rpath,$gles" -o "$work/bin/mirroring-tests"
 "$work/bin/mirroring-tests"

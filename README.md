@@ -33,18 +33,54 @@ Run `bash Tests/run-mirroring-tests.sh` for the native CGL and ANGLE GPU tests.
 They check pixel output, live resizing, reattachment, MSAA, and GL state restoration
 while the main thread is blocked.
 
-`Tests/RuntimeHost/Native.xcodeproj` and `Tests/RuntimeHost/ANGLE.xcodeproj`
-provide isolated application hosts linked against the local package. Open one
-project at a time (the projects select different package traits). Run its `Mac`
-scheme on macOS, or its `UIKit` scheme on Mac Catalyst or an iOS simulator.
-Each run checks presented pixels, source/mirror resizing, hide/show, stop/restart,
-and shutdown with an active mirror, both without MSAA and with 4x MSAA.
-UIKit hosts also move an already-rendering source to another window before
-starting mirroring, then move it back with mirroring active. They check window
-attachment state before incidental layout callbacks can hide stale render state.
-The host displays PASS/FAIL and writes `AsyncGL-<platform>-<backend>.json` in its
-Documents directory. These hosts use test-only GPU readback; production mirroring
-does not. Hardened runtime is disabled only for these ad-hoc-signed test hosts.
+Runtime application hosts are kept locally and are not distributed in this
+repository. The automated GPU and lifecycle tests remain included.
+
+## Sample-buffer output / PiP prototype
+
+`startSampleBufferOutputWithMaximumSize:handler:error:` exports native GLES 3,
+CGL 4.1, or ANGLE GLES 3 frames as GPU-backed BGRA `CMSampleBuffer`s.
+ANGLE requires `EGL_ANGLE_iosurface_client_buffer` with a 2D texture target
+(the Metal backend). It imports each pixel buffer's IOSurface into an EGL
+pbuffer, renders through its texture, and releases the EGL texture binding before
+inserting the completion fence. It does not switch the source EGL context or
+surfaces, and AsyncGL performs no CPU pixel copy.
+Call start/stop on main. The handler runs on the render thread after a GPU fence
+signals; retain the sample if handing it to another queue. Never wait for main or
+modify GL state inside the handler. Honor the consumer's readiness and do not
+enqueue an unbounded sequence of asynchronous delivery blocks.
+
+The output preserves aspect ratio, scales down only, and flips GL's origin to
+top-down pixel-buffer coordinates. Maximum dimensions must be 1...4096 pixels.
+MSAA resolves before scaling. There are at most three pending GPU frames and four
+pool buffers at the current output size; a slow consumer drops new frames.
+Starting again replaces the output; stopping retires it asynchronously.
+Completed frames are polled independently of new draws. Stopped or replaced
+outputs are retired even while paused, without resuming drawing or queued tasks.
+Runtime capture failures are logged and suspend that output until replaced.
+This API can run alongside mirroring and does not change application suspension
+or audio-session policy.
+
+PiP presentation is client-owned. On the macOS 27.2 test machine, public AVKit
+sample-buffer PiP clips or fails to scale on macOS and rejects the content source
+on Mac Catalyst despite valid GPU samples. Local private-SPI experiments are not
+part of the library or a supported integration.
+
+Physical-device iOS behavior remains unverified. The iPadOS 27.2 simulator rejects
+the native GLES pixel-buffer texture with
+`kCVReturnPixelBufferNotOpenGLCompatible` (-6683); no CPU fallback is used.
+Background rendering is not a supported device contract: native GLES commands
+can terminate an iOS app, and Metal can reject background submissions. ANGLE does
+not bypass these restrictions. Normal AsyncGL background protection is unchanged.
+
+Run `bash Tests/run-sample-buffer-tests.sh` on macOS for headless native output
+tests, or `bash Tests/run-sample-buffer-tests.sh angle` for the ANGLE Metal
+equivalent: single-sample/4x MSAA pixels, scaling, resize, timestamps, asynchronous
+fence delivery, pool backpressure and recovery, GL-state preservation, and cleanup
+with pending work. Lifecycle cases cover single-frame delivery without another
+draw, paused output replacement/stopping (including mirroring), and resuming
+deferred work. A gated resume-during-output-update case checks task ordering and
+exactly-once drawing. The ANGLE runner builds the package to resolve its frameworks.
 
 ## License
 

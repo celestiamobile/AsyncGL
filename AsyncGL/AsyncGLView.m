@@ -1417,8 +1417,14 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 }
 
 #pragma mark - view checker
+- (void)setRendersWhileOffscreen:(BOOL)rendersWhileOffscreen {
+    NSAssert(NSThread.isMainThread, @"Offscreen rendering must be configured on main");
+    _rendersWhileOffscreen = rendersWhileOffscreen;
+    [self _checkViewState];
+}
+
 - (BOOL)_allowsOffscreenRendering {
-    return NO;
+    return self.rendersWhileOffscreen;
 }
 
 - (void)_startObservingViewStateNotifications {

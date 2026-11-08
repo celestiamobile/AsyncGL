@@ -25,6 +25,11 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) CGFloat contentScaleFactor;
 #endif
 
+// Experimental, opt-in offscreen rendering. Set on main; defaults to NO.
+// Does not grant background GPU execution permission or schedule frames.
+// Prefer the controller's matching property when using AsyncGLViewController.
+@property (nonatomic) BOOL rendersWhileOffscreen;
+
 // Call on main. Presents the source frame on its render thread without readback.
 // Requires OpenGL ES 3 or native OpenGL core 4.1.
 // Native desktop rendering must be initialized before starting mirroring.
@@ -45,7 +50,7 @@ NS_ASSUME_NONNULL_BEGIN
 // output replaces the old one; stop is asynchronous. Runtime failures log and
 // suspend this output until it is replaced. This does not enable background GL.
 - (BOOL)startSampleBufferOutputWithMaximumSize:(CGSize)maximumSize
-                                      handler:(void (^)(CMSampleBufferRef sampleBuffer))handler
+                                      handler:(void (NS_SWIFT_SENDABLE ^)(CMSampleBufferRef sampleBuffer))handler
                                         error:(NSError * _Nullable * _Nullable)error;
 - (void)stopSampleBufferOutput;
 

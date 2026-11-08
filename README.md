@@ -61,6 +61,17 @@ Runtime capture failures are logged and suspend that output until replaced.
 This API can run alongside mirroring and does not change application suspension
 or audio-session policy.
 
+For experimental PiP clients, set
+`AsyncGLViewController.rendersWhileOffscreen = true` while PiP is starting or
+active, then reset it when PiP stops or fails. This opts into offscreen rendering,
+resumes a ready renderer, and replaces the scene/display-bound clock with an
+independent timer honoring the configured frame rate. Automatic inactivity and
+window-detachment pauses are suppressed; explicit `paused = true` still pauses.
+Disabling restores the normal clock and lifecycle policy. The corresponding view
+property only enables offscreen drawing; it does not schedule frames.
+Both properties default to false and must be changed on main. This policy does
+not grant permission to execute GPU commands in the background.
+
 PiP presentation is client-owned. On the macOS 27.2 test machine, public AVKit
 sample-buffer PiP clips or fails to scale on macOS and rejects the content source
 on Mac Catalyst despite valid GPU samples. Local private-SPI experiments are not
@@ -81,6 +92,8 @@ with pending work. Lifecycle cases cover single-frame delivery without another
 draw, paused output replacement/stopping (including mirroring), and resuming
 deferred work. A gated resume-during-output-update case checks task ordering and
 exactly-once drawing. The ANGLE runner builds the package to resolve its frameworks.
+Controller cases also cover the independent offscreen clock, lifecycle pauses,
+explicit pause, restart, and shutdown.
 
 ## License
 

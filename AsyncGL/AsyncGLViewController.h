@@ -29,6 +29,14 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, getter=isPaused) BOOL paused;
 @property (nonatomic, nullable) AsyncGLView *glView;
 
+// Experimental, opt-in rendering without a visible window, including during
+// app inactivity. Set on main; defaults to NO. Uses an independent frame clock
+// and suppresses automatic lifecycle pauses, but explicit paused=YES still wins.
+// Enabling resumes a ready renderer; disabling restores normal lifecycle policy.
+// The caller must ensure GPU execution is permitted. PiP does not itself grant
+// background OpenGL/Metal permission on iOS.
+@property (nonatomic) BOOL rendersWhileOffscreen;
+
 #if !TARGET_OS_OSX
 - (instancetype)initWithMSAAEnabled:(BOOL)msaaEnabled initialFrameRate:(NSInteger)frameRate api:(AsyncGLAPI)api executor:(AsyncGLExecutor *)executor NS_DESIGNATED_INITIALIZER;
 #else

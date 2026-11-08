@@ -3,6 +3,8 @@
 #import "../AsyncGL/AsyncGLMirroringTarget.m"
 #import "../AsyncGL/AsyncGLMirroringView.m"
 #import "../AsyncGL/AsyncGLView.m"
+#import "../AsyncGL/AsyncGLExecutor.m"
+#import "../AsyncGL/AsyncGLViewController.m"
 #include <stdatomic.h>
 #include <unistd.h>
 
@@ -364,12 +366,136 @@ static void TestResumeDuringOutputUpdate(void) {
     NSLog(@"PASS: resume during paused output update preserves task ordering and one draw");
 }
 
+@interface FrameClockTestView : AsyncGLView
+@property (nonatomic) NSUInteger frames;
+@property (nonatomic) BOOL workerPaused;
+@end
+
+@implementation FrameClockTestView
+- (void)requestRender { self.frames += 1; }
+- (void)pause { self.workerPaused = YES; }
+- (void)resume { self.workerPaused = NO; }
+- (void)clear {}
+- (void)clearWithDelegate:(id<AsyncGLViewDelegate>)delegate completion:(void (^)(void))completion {
+    if (completion != nil)
+        completion();
+}
+@end
+
+@interface FrameClockPreparationController : AsyncGLViewController
+@property (nonatomic, copy) BOOL (^preparation)(void);
+@property (nonatomic) BOOL simulateActiveWindow;
+@end
+
+@implementation FrameClockPreparationController
+- (BOOL)prepareGL:(CGSize)size samples:(NSInteger)samples {
+    return self.preparation();
+}
+- (BOOL)shouldPauseForCurrentLifecycle {
+    return self.simulateActiveWindow ? NO : [super shouldPauseForCurrentLifecycle];
+}
+@end
+
+static void TestOffscreenPreparation(BOOL pauseDuringPreparation, BOOL disableDuringPreparation) {
+    FrameClockPreparationController *controller = [[FrameClockPreparationController alloc]
+        initWithMSAAEnabled:NO initialFrameRate:60 api:AsyncGLAPIOpenGLES3 executor:[AsyncGLExecutor new]];
+    FrameClockTestView *view = [FrameClockTestView new];
+    view.workerPaused = YES;
+    controller.glView = view;
+    controller.simulateActiveWindow = disableDuringPreparation;
+    controller.rendersWhileOffscreen = YES;
+
+    __block atomic_bool entered;
+    __block atomic_bool finished;
+    atomic_init(&entered, false);
+    atomic_init(&finished, false);
+    dispatch_semaphore_t releasePreparation = dispatch_semaphore_create(0);
+    controller.preparation = ^BOOL{
+        atomic_store(&entered, true);
+        Check(dispatch_semaphore_wait(releasePreparation, dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC)) == 0,
+              @"Preparation gate timed out");
+        return YES;
+    };
+    __weak FrameClockPreparationController *weakController = controller;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        Check([weakController _prepareGL:CGSizeMake(32, 24) samples:0], @"Controller preparation failed");
+        atomic_store(&finished, true);
+    });
+    PumpUntil(^BOOL{ return atomic_load(&entered); }, @"Preparation must reach its gate");
+    if (pauseDuringPreparation) {
+        controller.paused = YES;
+        controller.rendersWhileOffscreen = YES;
+    }
+    if (disableDuringPreparation)
+        controller.rendersWhileOffscreen = NO;
+    dispatch_semaphore_signal(releasePreparation);
+    PumpUntil(^BOOL{ return atomic_load(&finished); }, @"Preparation must finish");
+    if (pauseDuringPreparation) {
+        Check(controller.isPaused && view.workerPaused, @"Preparation must preserve a newer explicit pause");
+        [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+        Check(view.frames == 0, @"Preparation must not restart an explicitly paused clock");
+        if (!disableDuringPreparation)
+            controller.paused = NO;
+    }
+    if (disableDuringPreparation) {
+        Check(controller.isPaused == pauseDuringPreparation && view.workerPaused == pauseDuringPreparation,
+              @"Disabling during preparation must restore active-window rendering unless explicitly paused");
+    } else {
+        PumpUntil(^BOOL{ return view.frames > 0; }, @"Offscreen rendering must start when resume is requested");
+    }
+    [controller shutdown];
+    NSLog(@"PASS: %@ during preparation %@", disableDuringPreparation ? @"offscreen disable" : @"offscreen startup",
+          pauseDuringPreparation ? @"preserves explicit pause" : @"resumes automatically");
+}
+
+static void TestOffscreenFrameClock(void) {
+    AsyncGLExecutor *executor = [AsyncGLExecutor new];
+    AsyncGLViewController *controller = [[AsyncGLViewController alloc]
+        initWithMSAAEnabled:NO initialFrameRate:60 api:AsyncGLAPIOpenGLES3 executor:executor];
+    FrameClockTestView *view = [FrameClockTestView new];
+    controller.glView = view;
+    controller.ready = YES;
+    controller.pauseOnWillResignActive = YES;
+    controller.rendersWhileOffscreen = YES;
+    PumpUntil(^BOOL{ return view.frames > 0; }, @"Offscreen clock must render without a window");
+    Check(view.rendersWhileOffscreen && !view.workerPaused, @"Offscreen mode must enable and resume the source");
+
+    [controller _pauseByNotification];
+    [controller _viewWillMoveToWindow:nil];
+    Check(!controller.isPaused && !view.workerPaused, @"PiP must survive inactivity and window detachment");
+
+    controller.paused = YES;
+    NSUInteger frames = view.frames;
+    [controller _viewWillMoveToWindow:nil];
+    Check(controller.isPaused && view.workerPaused, @"Window detachment must preserve an explicit offscreen pause");
+    [controller _resumeByNotification];
+    Check(controller.isPaused && view.workerPaused, @"App activation must preserve an explicit offscreen pause");
+    [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+    Check(view.workerPaused && view.frames == frames, @"Lifecycle changes must leave the explicitly paused clock stopped");
+
+    controller.rendersWhileOffscreen = NO;
+    Check(controller.isPaused && !view.rendersWhileOffscreen, @"Disabling must restore windowless suspension");
+    controller.rendersWhileOffscreen = YES;
+    PumpUntil(^BOOL{ return view.frames > frames; }, @"Offscreen rendering must restart");
+    [controller shutdown];
+    frames = view.frames;
+    [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+    Check(!controller.rendersWhileOffscreen && !view.rendersWhileOffscreen && view.frames == frames,
+          @"Shutdown must stop offscreen drawing and cancel its clock");
+    NSLog(@"PASS: offscreen clock, inactivity, detachment, explicit pause, restart and shutdown");
+}
+
 int main(void) {
     @autoreleasepool {
         TestOutput(NO);
         TestOutput(YES);
         TestOutputLifecycle();
         TestResumeDuringOutputUpdate();
+        TestOffscreenFrameClock();
+        TestOffscreenPreparation(NO, NO);
+        TestOffscreenPreparation(YES, NO);
+        TestOffscreenPreparation(NO, YES);
+        TestOffscreenPreparation(YES, YES);
     }
     return 0;
 }

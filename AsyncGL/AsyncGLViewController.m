@@ -29,6 +29,7 @@
 @property (atomic, getter=isReady) BOOL ready;
 @property (nonatomic) AsyncGLAPI api;
 @property (nonatomic) BOOL shuttingDown;
+@property (nonatomic) BOOL resumeOffscreenAfterPreparation;
 @end
 
 @implementation AsyncGLViewController
@@ -74,6 +75,7 @@
     _glView.api = _api;
     _glView.msaaEnabled = _msaaEnabled;
     [_glView commonSetup];
+    _glView.rendersWhileOffscreen = _rendersWhileOffscreen;
     _glView.delegate = self;
     self.view = _glView;
     _internalExecutor.view = _glView;
@@ -94,6 +96,9 @@
     NSAssert([NSThread isMainThread], @"Shutdown must be requested on the main thread");
     if (!_shuttingDown) {
         _shuttingDown = YES;
+        _rendersWhileOffscreen = NO;
+        _resumeOffscreenAfterPreparation = NO;
+        _glView.rendersWhileOffscreen = NO;
         self.ready = NO;
         [[NSNotificationCenter defaultCenter] removeObserver:self];
         [self invalidateDisplayLink];
@@ -106,6 +111,10 @@
 }
 
 - (void)invalidateDisplayLink {
+    if (_displaySource != nil) {
+        dispatch_source_cancel(_displaySource);
+        _displaySource = nil;
+    }
     if (_displayLink) {
         [_displayLink invalidate];
         _displayLink = nil;
@@ -162,9 +171,71 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 
 #pragma mark - getters/setters
 
+- (void)setRendersWhileOffscreen:(BOOL)rendersWhileOffscreen {
+    NSAssert(NSThread.isMainThread, @"Offscreen rendering must be configured on main");
+    if (_rendersWhileOffscreen == rendersWhileOffscreen)
+        return;
+    if (_shuttingDown)
+        [NSException raise:NSInternalInconsistencyException format:@"The controller has shut down"];
+    BOOL restoreStartupPolicy = !rendersWhileOffscreen && _resumeOffscreenAfterPreparation;
+    _rendersWhileOffscreen = rendersWhileOffscreen;
+    _resumeOffscreenAfterPreparation = rendersWhileOffscreen && !_ready;
+    _glView.rendersWhileOffscreen = rendersWhileOffscreen;
+#if !TARGET_OS_OSX
+    [self setWindowScene:_internalWindowScene];
+#else
+    [self setScreen:_internalScreen];
+#endif
+    if (_ready || restoreStartupPolicy)
+        self.paused = !rendersWhileOffscreen && [self shouldPauseForCurrentLifecycle];
+}
+
+- (BOOL)shouldPauseForCurrentLifecycle {
+#if !TARGET_OS_OSX
+    return _internalWindowScene == nil ||
+        (_pauseOnWillResignActive && UIApplication.sharedApplication.applicationState != UIApplicationStateActive);
+#else
+    return _internalScreen == nil || (_pauseOnWillResignActive && !NSApp.isActive);
+#endif
+}
+
+- (void)updateOffscreenFrameRate {
+    if (_displaySource == nil)
+        return;
+    NSInteger rate = _internalPreferredFramesPerSecond;
+    if (rate <= 0) {
+#if !TARGET_OS_OSX
+        rate = self.internalWindowScene.screen.maximumFramesPerSecond;
+#else
+        if (@available(macOS 12.0, *))
+            rate = self.internalScreen.maximumFramesPerSecond;
+#endif
+        if (rate <= 0)
+            rate = 60;
+    }
+    uint64_t interval = MAX(1, NSEC_PER_SEC / (uint64_t)rate);
+    dispatch_source_set_timer(_displaySource, _paused ? DISPATCH_TIME_FOREVER : DISPATCH_TIME_NOW,
+                             interval, MIN(NSEC_PER_MSEC, interval / 10));
+}
+
+- (void)startOffscreenClock {
+    _displaySource = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    __weak AsyncGLViewController *weakSelf = self;
+    dispatch_source_set_event_handler(_displaySource, ^{
+        AsyncGLViewController *controller = weakSelf;
+        if (controller != nil && !controller.isPaused && !controller.shuttingDown)
+            [controller requestRender];
+    });
+    [self updateOffscreenFrameRate];
+    dispatch_resume(_displaySource);
+}
+
 - (void)setPaused:(BOOL)paused
 {
+    // A newer pause/resume request supersedes the deferred offscreen startup.
+    _resumeOffscreenAfterPreparation = NO;
     _paused = paused;
+    [self updateOffscreenFrameRate];
 
     if (_displayLink != nil)
         [_displayLink setPaused:paused];
@@ -191,6 +262,10 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
         [self setScreen:self.internalScreen];
 #endif
         self.ready = YES;
+        BOOL shouldResume = self.rendersWhileOffscreen && self.resumeOffscreenAfterPreparation;
+        self.resumeOffscreenAfterPreparation = NO;
+        if (shouldResume)
+            self.paused = NO;
     });
     return YES;
 }
@@ -213,13 +288,15 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 - (void)_viewWillMoveToWindow:(UIWindow *)window {
     UIWindowScene *windowScene = [window windowScene];
     [self setWindowScene:windowScene];
-    [self setPaused:windowScene == nil];
+    if (!_rendersWhileOffscreen)
+        [self setPaused:windowScene == nil];
 }
 #else
 - (void)_viewWillMoveToWindow:(NSWindow *)window {
     NSScreen *screen = [window screen];
     [self setScreen:screen];
-    [self setPaused:screen == nil];
+    if (!_rendersWhileOffscreen)
+        [self setPaused:screen == nil];
 }
 #endif
 
@@ -235,6 +312,7 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 
 - (void)setPreferredFramesPerSecond:(NSInteger)preferredFramesPerSecond {
     _internalPreferredFramesPerSecond = preferredFramesPerSecond;
+    [self updateOffscreenFrameRate];
 #if TARGET_OS_OSX
     if (@available(macOS 14.0, *))
 #endif
@@ -246,7 +324,13 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 {
     _internalWindowScene = windowScene;
     [self invalidateDisplayLink];
-    if (windowScene == nil || _shuttingDown)
+    if (_shuttingDown)
+        return;
+    if (_rendersWhileOffscreen) {
+        [self startOffscreenClock];
+        return;
+    }
+    if (windowScene == nil)
         return;
 
     _displayLink = [self _createDisplayLink];
@@ -259,7 +343,13 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 {
     _internalScreen = screen;
     [self invalidateDisplayLink];
-    if (screen == nil || _shuttingDown)
+    if (_shuttingDown)
+        return;
+    if (_rendersWhileOffscreen) {
+        [self startOffscreenClock];
+        return;
+    }
+    if (screen == nil)
         return;
     if (@available(macOS 14.0, *)) {
         _displayLink = [screen displayLinkWithTarget:self selector:@selector(requestRender)];
@@ -300,12 +390,14 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 
 - (void)_pauseByNotification
 {
-    if (_pauseOnWillResignActive)
+    if (_pauseOnWillResignActive && !_rendersWhileOffscreen)
         [self setPaused:YES];
 }
 
 - (void)_resumeByNotification
 {
+    if (_rendersWhileOffscreen)
+        return;
 #if !TARGET_OS_OSX
     if (_resumeOnDidBecomeActive && _internalWindowScene != nil)
 #else
@@ -322,11 +414,13 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 #if !TARGET_OS_OSX
     UIWindowScene *windowScene = [[[self view] window] windowScene];
     [self setWindowScene:windowScene];
-    [self setPaused:windowScene == nil];
+    if (!_rendersWhileOffscreen)
+        [self setPaused:windowScene == nil];
 #else
     NSScreen *screen = [[[self view] window] screen];
     [self setScreen:screen];
-    [self setPaused:screen == nil];
+    if (!_rendersWhileOffscreen)
+        [self setPaused:screen == nil];
 #endif
 }
 

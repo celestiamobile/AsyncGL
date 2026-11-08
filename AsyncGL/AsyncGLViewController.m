@@ -142,14 +142,18 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 #if !TARGET_OS_OSX
 - (CADisplayLink *)_createDisplayLink
 {
+    UIWindowScene *scene = self.internalWindowScene;
+    BOOL externalDisplay = [scene.session.role isEqualToString:UIWindowSceneSessionRoleExternalDisplayNonInteractive] ||
+        [scene.session.role isEqualToString:UIWindowSceneSessionRoleExternalDisplay];
     CADisplayLink *link = nil;
     if (@available(iOS 27.0, tvOS 27.0, visionOS 27, *)) {
-        // UIWindowScene's display link automatically retargets when the
-        // scene moves between displays, so prefer it when available.
-        link = [self.internalWindowScene displayLinkWithTarget:self selector:@selector(requestRender)];
+        // Scene-bound links can stop ticking on noninteractive external displays.
+        // Keep automatic scene retargeting for application windows only.
+        if (!externalDisplay)
+            link = [scene displayLinkWithTarget:self selector:@selector(requestRender)];
     }
     if (link == nil)
-        link = [self.internalWindowScene.screen displayLinkWithTarget:self selector:@selector(requestRender)];
+        link = [scene.screen displayLinkWithTarget:self selector:@selector(requestRender)];
     if (link == nil)
         link = [CADisplayLink displayLinkWithTarget:self selector:@selector(requestRender)];
     return link;

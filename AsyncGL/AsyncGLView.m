@@ -6,6 +6,7 @@
 #include <os/lock.h>
 
 #import "AsyncGLView+Private.h"
+#import "AsyncGLMirroring.h"
 
 typedef NS_OPTIONS(NSUInteger, AsyncGLViewEvent) {
     AsyncGLViewEventNone                = 0,
@@ -22,16 +23,6 @@ typedef NS_ENUM(NSUInteger, AsyncGLViewContextState) {
     AsyncGLViewContextStateEnded,
     AsyncGLViewContextStateFailed,
 };
-
-#if TARGET_OS_MACCATALYST
-#define TARGET_OSX_OR_CATALYST          1
-#elif TARGET_OS_OSX
-#define TARGET_OSX_OR_CATALYST          1
-#endif
-
-#if __has_include(<libEGL/libEGL.h>) && __has_include(<libGLESv2/libGLESv2.h>)
-#define USE_EGL
-#endif
 
 #ifdef USE_EGL
 #if TARGET_OS_OSX
@@ -194,6 +185,8 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 @property (nonatomic) AsyncGLViewContextState contextState;
 @property (nonatomic) BOOL requestExitThread;
 @property (nonatomic) GLsizei sampleCount;
+@property (nonatomic) AsyncGLMirroringTarget *mirroringTarget;
+@property (nonatomic) AsyncGLMirroringTarget *activeMirroringTarget;
 #ifdef USE_EGL
 @property (nonatomic) CAMetalLayer *metalLayer;
 @property (nonatomic) EGLRenderingAPI internalAPI;
@@ -315,6 +308,51 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 }
 
 #pragma mark - interfaces
+#if TARGET_OS_OSX
+- (NSView *)startMirroring {
+#else
+- (UIView *)startMirroring {
+#endif
+    NSAssert([NSThread isMainThread], @"Mirroring must be started on main");
+#if !defined(USE_EGL) && TARGET_OSX_OR_CATALYST
+    if (_api != AsyncGLAPIOpenGLCore41)
+        [NSException raise:NSInternalInconsistencyException format:@"Mirroring requires OpenGL core 4.1"];
+#else
+    if (_api != AsyncGLAPIOpenGLES3)
+        [NSException raise:NSInternalInconsistencyException format:@"Mirroring requires OpenGL ES 3"];
+#endif
+    AsyncGLMirroringView *view = [[AsyncGLMirroringView alloc] initWithFrame:CGRectZero];
+    [_condition lock];
+    if (_requestExitThread) {
+        [_condition unlock];
+        [NSException raise:NSInternalInconsistencyException format:@"The render thread has stopped"];
+    }
+#if !defined(USE_EGL) && TARGET_OSX_OR_CATALYST
+    if (!_contextsCreated || _renderContext == NULL) {
+        [_condition unlock];
+        [NSException raise:NSInternalInconsistencyException format:@"Mirroring requires an initialized OpenGL renderer"];
+    }
+    if (![view.target prepareWithCGLContext:_renderContext]) {
+        [_condition unlock];
+        [NSException raise:NSInternalInconsistencyException format:@"The CGL mirroring context could not be created"];
+    }
+#endif
+    _mirroringTarget = view.target;
+    _event |= AsyncGLViewEventDraw;
+    [_condition signal];
+    [_condition unlock];
+    return view;
+}
+
+- (void)stopMirroring {
+    NSAssert([NSThread isMainThread], @"Mirroring must be stopped on main");
+    [_condition lock];
+    _mirroringTarget = nil;
+    _event |= AsyncGLViewEventDraw;
+    [_condition signal];
+    [_condition unlock];
+}
+
 - (void)makeRenderContextCurrent {
 #ifdef USE_EGL
     eglMakeCurrent(_display, _renderSurface, _renderSurface, _renderContext);
@@ -453,6 +491,15 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
     BOOL shouldRender = _shouldRender;
     os_unfair_lock_unlock(&_renderLock);
 
+    [_condition lock];
+    AsyncGLMirroringTarget *target = _mirroringTarget;
+    [_condition unlock];
+    if (_activeMirroringTarget != target) {
+        [self makeRenderContextCurrent];
+        [_activeMirroringTarget clear];
+        _activeMirroringTarget = target;
+    }
+
     if (shouldRender) {
         if (!CGSizeEqualToSize(_lastRenderSize, size)) {
             _lastRenderSize = size;
@@ -467,6 +514,14 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 
         [self makeRenderContextCurrent];
         [self _drawGL:size];
+        if (_activeMirroringTarget != nil) {
+#ifdef USE_EGL
+            if (![_activeMirroringTarget drawFromFramebuffer:0 size:size display:_display config:_renderConfig context:_renderContext sourceSurface:_renderSurface])
+                return;
+#else
+            [_activeMirroringTarget drawFromFramebuffer:_framebuffer size:size];
+#endif
+        }
     #ifdef USE_EGL
         eglSwapBuffers(_display, _renderSurface);
     #else
@@ -1134,7 +1189,13 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
     _cleanupStarted = YES;
     __block id<AsyncGLViewDelegate> delegate = _cleanupDelegate ?: _delegate;
     _cleanupDelegate = nil;
+    _mirroringTarget = nil;
     [_condition unlock];
+    if (_activeMirroringTarget != nil) {
+        [self makeRenderContextCurrent];
+        [_activeMirroringTarget clear];
+        _activeMirroringTarget = nil;
+    }
     if (_didPrepareGL) {
         [self makeRenderContextCurrent];
         [delegate _clearGL];
@@ -1321,12 +1382,22 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 }
 
 #if !TARGET_OS_OSX
+- (void)didMoveToWindow {
+    [super didMoveToWindow];
+    [self _checkViewState];
+}
+
 - (void)layoutSubviews {
     [super layoutSubviews];
 
     [self _checkViewState];
 }
 #else
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    [self _checkViewState];
+}
+
 - (void)setFrameSize:(NSSize)size {
     [super setFrameSize:size];
     [self _checkViewState];

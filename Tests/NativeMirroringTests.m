@@ -5,8 +5,21 @@
 #include <stdatomic.h>
 
 static _Atomic(NSUInteger) presentations;
+static _Atomic(NSUInteger) uniformLookups;
+static NSUInteger resolveStorageAllocations;
+static BOOL failResolveStorage;
 static GLubyte presentedPixels[4][4];
 static CGLContextObj sourceContext;
+
+static GLint CountUniformLookup(GLuint program, const GLchar *name) {
+    ++uniformLookups;
+    return glGetUniformLocation(program, name);
+}
+
+static void CountResolveStorage(GLenum target, GLenum format, GLsizei width, GLsizei height) {
+    ++resolveStorageAllocations;
+    glRenderbufferStorage(target, format, failResolveStorage ? -1 : width, height);
+}
 
 static void CaptureMirrorFlush(void) {
     if (CGLGetCurrentContext() == sourceContext) {
@@ -30,10 +43,14 @@ static void CaptureMirrorFlush(void) {
 }
 
 #define glFlush CaptureMirrorFlush
+#define glGetUniformLocation CountUniformLookup
 #import "../AsyncGL/AsyncGLMirroringTarget.m"
+#undef glGetUniformLocation
 #undef glFlush
 #import "../AsyncGL/AsyncGLMirroringView.m"
+#define glRenderbufferStorage CountResolveStorage
 #import "../AsyncGL/AsyncGLView.m"
+#undef glRenderbufferStorage
 
 static void Check(BOOL condition, NSString *message) {
     if (!condition) {
@@ -134,6 +151,7 @@ static void TestNativeMirroring(BOOL multisample) {
     glGenSamplers(1, &sampler);
     glGenVertexArrays(1, &vertexArray);
     glGenBuffers(1, &unpackBuffer);
+    NSUInteger initialLookups = uniformLookups;
     for (int pass = 0; pass < 2; ++pass) {
         CGSize size = pass == 0 ? CGSizeMake(24, 16) : CGSizeMake(36, 20);
         CGSize targetSize = pass == 0 ? CGSizeMake(20, 12) : CGSizeMake(28, 16);
@@ -190,6 +208,7 @@ static void TestNativeMirroring(BOOL multisample) {
         NSUInteger before = presentations;
         DrawOffMain(target, sourceFramebuffer, size, context);
         Check(presentations == before + 1, @"The CGL mirror did not draw");
+        Check(uniformLookups == initialLookups + 1, @"CGL mirroring must cache the uniform location across frames and resize");
         CheckPixels();
         GLint value, viewport[4], polygonMode[2];
         GLboolean mask[4];
@@ -254,6 +273,97 @@ static void TestNativeMirroring(BOOL multisample) {
           multisample ? @"4x MSAA" : @"single-sample");
 }
 
+static void TestScreenshotResolve(void) {
+    const CGLPixelFormatAttribute attributes[] = {
+        kCGLPFAOpenGLProfile, (CGLPixelFormatAttribute)kCGLOGLPVersion_GL4_Core, 0
+    };
+    CGLPixelFormatObj format = NULL;
+    CGLContextObj context = NULL;
+    GLint count = 0;
+    Check(CGLChoosePixelFormat(attributes, &format, &count) == kCGLNoError, @"Screenshot pixel format");
+    Check(CGLCreateContext(format, NULL, &context) == kCGLNoError, @"Screenshot context");
+    CGLReleasePixelFormat(format);
+    Check(CGLSetCurrentContext(context) == kCGLNoError, @"Screenshot current context");
+    AsyncGLView *view = [AsyncGLView new];
+    view.renderContext = context;
+    view.msaaEnabled = YES;
+    GLuint framebuffer, colorbuffer, callerFramebuffer;
+    glGenFramebuffers(1, &framebuffer);
+    glGenRenderbuffers(1, &colorbuffer);
+    glGenFramebuffers(1, &callerFramebuffer);
+    view.framebuffer = framebuffer;
+    view.renderColorbuffer = colorbuffer;
+    glDisable(GL_SCISSOR_TEST);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    NSUInteger initialAllocations = resolveStorageAllocations;
+    GLuint resolveFramebuffer = 0, resolveColorbuffer = 0;
+    for (int pass = 0; pass < 3; ++pass) {
+        GLsizei width = pass < 2 ? 16 : 24;
+        GLsizei height = pass < 2 ? 12 : 20;
+        view.savedBufferSize = CGSizeMake(width, height);
+        glBindRenderbuffer(GL_RENDERBUFFER, colorbuffer);
+        glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_RGBA8, width, height);
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, colorbuffer);
+        Check(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE, @"Screenshot source framebuffer");
+        if (pass == 2) {
+            failResolveStorage = YES;
+            [view prepareForDrawing:^{
+                glBindFramebuffer(GL_READ_FRAMEBUFFER, callerFramebuffer);
+            } resolve:^{
+                Check(NO, @"A failed resize must not deliver a screenshot from stale storage");
+            }];
+            failResolveStorage = NO;
+            Check(CGSizeEqualToSize(view.resolveBufferSize, CGSizeZero),
+                  @"A failed resize must invalidate the cached dimensions");
+            GLint binding;
+            glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &binding);
+            Check(binding == callerFramebuffer, @"Failed resize must restore the read framebuffer");
+            glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &binding);
+            Check(binding == framebuffer, @"Failed resize must restore the draw framebuffer");
+            glGetIntegerv(GL_RENDERBUFFER_BINDING, &binding);
+            Check(binding == colorbuffer, @"Failed resize must restore the renderbuffer");
+            CheckGLError(@"Handled screenshot allocation failure");
+        }
+        __block BOOL resolved = NO;
+        [view prepareForDrawing:^{
+            glClearColor(pass == 0 ? 1 : 0, pass == 1 ? 1 : 0, pass == 2 ? 1 : 0, 1);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, callerFramebuffer);
+        } resolve:^{
+            GLubyte pixel[4] = {0};
+            glReadPixels(width - 1, height - 1, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+            Check(pixel[pass] == 255 && pixel[(pass + 1) % 3] == 0 && pixel[3] == 255,
+                  @"Screenshot resolve must produce current pixels after reuse and resize");
+            resolved = YES;
+        }];
+        Check(resolved, @"Screenshot resolve callback");
+        Check(resolveStorageAllocations == initialAllocations + (pass < 2 ? 1 : 3),
+              @"Screenshot resolve storage must reuse unchanged storage and retry failed resizing");
+        if (pass == 0) {
+            resolveFramebuffer = view.resolveFramebuffer;
+            resolveColorbuffer = view.resolveColorbuffer;
+        }
+        Check(view.resolveFramebuffer == resolveFramebuffer && view.resolveColorbuffer == resolveColorbuffer,
+              @"Screenshot resolve objects must be reused");
+        GLint binding;
+        glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &binding);
+        Check(binding == callerFramebuffer, @"Screenshot must restore the read framebuffer");
+        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &binding);
+        Check(binding == framebuffer, @"Screenshot must restore the draw framebuffer");
+        glGetIntegerv(GL_RENDERBUFFER_BINDING, &binding);
+        Check(binding == colorbuffer, @"Screenshot must restore the renderbuffer");
+        CheckGLError(@"Screenshot resolve");
+    }
+    [view clearResources];
+    Check(!glIsFramebuffer(resolveFramebuffer) && !glIsRenderbuffer(resolveColorbuffer),
+          @"Screenshot resolve resources must be deleted during cleanup");
+    glDeleteFramebuffers(1, &callerFramebuffer);
+    CheckGLError(@"Screenshot cleanup");
+    [view destroyRenderContext];
+    NSLog(@"PASS: MSAA screenshot pixels, reuse, resize failure/recovery, bindings and cleanup");
+}
+
 #import "MirroringLifecycleTests.h"
 
 int main(void) {
@@ -262,6 +372,7 @@ int main(void) {
         [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
         TestNativeMirroring(NO);
         TestNativeMirroring(YES);
+        TestScreenshotResolve();
         TestMirroringLifecycle();
     }
     return 0;

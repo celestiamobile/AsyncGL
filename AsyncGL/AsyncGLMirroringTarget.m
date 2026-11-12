@@ -52,6 +52,7 @@ static GLuint AsyncGLCompileMirrorShader(GLenum type, const char *source) {
     GLuint _texture;
     GLuint _framebuffer;
     GLuint _program;
+    GLint _frameUniform;
     GLuint _vertexArray;
 #ifdef USE_EGL
     EGLDisplay _display;
@@ -146,6 +147,7 @@ static GLuint AsyncGLCompileMirrorShader(GLenum type, const char *source) {
         NSLog(@"Mirroring program linking failed: %s", message);
         return NO;
     }
+    _frameUniform = glGetUniformLocation(_program, "frame");
 #if defined(USE_EGL) || !TARGET_OSX_OR_CATALYST
     glGenVertexArrays(1, &_vertexArray);
 #endif
@@ -290,6 +292,9 @@ static GLuint AsyncGLCompileMirrorShader(GLenum type, const char *source) {
 
     BOOL ready = YES;
     BOOL waitingForDrawable = NO;
+#ifdef USE_EGL
+    BOOL createdSurface = NO;
+#endif
     if (_program == 0)
         ready = [self createProgram];
     if (ready && !CGSizeEqualToSize(size, _textureSize)) {
@@ -325,6 +330,8 @@ static GLuint AsyncGLCompileMirrorShader(GLenum type, const char *source) {
         if (_surface == EGL_NO_SURFACE) {
             NSLog(@"Mirroring surface creation failed: %d", eglGetError());
             ready = NO;
+        } else {
+            createdSurface = YES;
         }
 #elif !TARGET_OSX_OR_CATALYST
         glGenRenderbuffers(1, &_colorbuffer);
@@ -362,7 +369,7 @@ static GLuint AsyncGLCompileMirrorShader(GLenum type, const char *source) {
             ready = eglMakeCurrent(display, _surface, _surface, context);
             if (!ready)
                 NSLog(@"Making mirroring surface current failed: %d", eglGetError());
-            else if (!eglSwapInterval(display, 0)) {
+            else if (createdSurface && !eglSwapInterval(display, 0)) {
                 NSLog(@"Setting mirroring swap interval failed: %d", eglGetError());
                 ready = NO;
             }
@@ -401,7 +408,7 @@ static GLuint AsyncGLCompileMirrorShader(GLenum type, const char *source) {
 #endif
         glViewport(0, 0, (GLsizei)targetSize.width, (GLsizei)targetSize.height);
         glUseProgram(_program);
-        glUniform1i(glGetUniformLocation(_program, "frame"), 0);
+        glUniform1i(_frameUniform, 0);
         glBindVertexArray(_vertexArray);
         glBindTexture(GL_TEXTURE_2D, _texture);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
@@ -524,7 +531,7 @@ static GLuint AsyncGLCompileMirrorShader(GLenum type, const char *source) {
     glBindSampler(0, 0);
     glViewport(0, 0, (GLsizei)_surfaceSize.width, (GLsizei)_surfaceSize.height);
     glUseProgram(_program);
-    glUniform1i(glGetUniformLocation(_program, "frame"), 0);
+    glUniform1i(_frameUniform, 0);
     if (_vertexArray == 0)
         glGenVertexArrays(1, &_vertexArray);
     glBindVertexArray(_vertexArray);

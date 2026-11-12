@@ -366,6 +366,94 @@ static void TestResumeDuringOutputUpdate(void) {
     NSLog(@"PASS: resume during paused output update preserves task ordering and one draw");
 }
 
+static void TestExecutorBatches(void) {
+    OutputLifecycleDelegate *delegate = [OutputLifecycleDelegate new];
+    atomic_init(&delegate->draws, 0);
+    atomic_init(&delegate->samples, 0);
+    atomic_init(&delegate->queuedTaskRan, false);
+    OutputLifecycleView *view = [[OutputLifecycleView alloc] initWithFrame:NSMakeRect(0, 0, 32, 24)];
+#ifdef USE_EGL
+    view.api = AsyncGLAPIOpenGLES3;
+#else
+    view.api = AsyncGLAPIOpenGLCore41;
+#endif
+    [view commonSetup];
+    view.delegate = delegate;
+    [view createContexts];
+    PumpUntil(^BOOL{ return view.contextState == AsyncGLViewContextStateRenderContextCreated; }, @"Batch context creation");
+    NSMutableArray<NSNumber *> *order = [NSMutableArray array];
+    __block atomic_uint completed;
+    __block atomic_bool gateEntered;
+    __block atomic_bool paused;
+    atomic_init(&completed, 0);
+    atomic_init(&gateEntered, false);
+    atomic_init(&paused, false);
+    dispatch_semaphore_t releaseGate = dispatch_semaphore_create(0);
+    dispatch_block_t gate = ^{
+        atomic_store(&gateEntered, true);
+        Check(dispatch_semaphore_wait(releaseGate, dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC)) == 0,
+              @"Executor batch gate timed out");
+    };
+    [view enqueueTask:gate];
+    PumpUntil(^BOOL{ return atomic_load(&gateEntered); }, @"Initial executor gate");
+    [view enqueueTask:^{
+        [order addObject:@1];
+        atomic_fetch_add(&completed, 1);
+        [view enqueueTask:^{
+            [order addObject:@3];
+            atomic_fetch_add(&completed, 1);
+        }];
+    }];
+    [view enqueueTask:^{
+        [order addObject:@2];
+        atomic_fetch_add(&completed, 1);
+    }];
+    dispatch_semaphore_signal(releaseGate);
+    PumpUntil(^BOOL{ return atomic_load(&completed) == 3; }, @"Nested submissions must run in the next batch");
+
+    atomic_store(&gateEntered, false);
+    [view enqueueTask:gate];
+    PumpUntil(^BOOL{ return atomic_load(&gateEntered); }, @"Pause executor gate");
+    [view enqueueTask:^{
+        [order addObject:@4];
+        atomic_fetch_add(&completed, 1);
+    }];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        [view pause];
+        atomic_store(&paused, true);
+    });
+    PumpUntil(^BOOL{
+        [view.condition lock];
+        BOOL pending = (view.event & AsyncGLViewEventPause) != 0;
+        [view.condition unlock];
+        return pending;
+    }, @"Pause must snapshot the accepted task prefix");
+    [view enqueueTask:^{
+        [order addObject:@5];
+        atomic_fetch_add(&completed, 1);
+    }];
+    dispatch_semaphore_signal(releaseGate);
+    PumpUntil(^BOOL{ return atomic_load(&paused); }, @"Pause must drain its accepted task prefix");
+    Check(atomic_load(&completed) == 4, @"Tasks submitted after pause must remain deferred");
+    [view resume];
+    PumpUntil(^BOOL{ return atomic_load(&completed) == 5; }, @"Resume must drain the remaining batch");
+
+    atomic_store(&gateEntered, false);
+    [view enqueueTask:gate];
+    PumpUntil(^BOOL{ return atomic_load(&gateEntered); }, @"Shutdown executor gate");
+    [view enqueueTask:^{
+        [order addObject:@6];
+        atomic_fetch_add(&completed, 1);
+    }];
+    __block BOOL stopped = NO;
+    [view clearWithDelegate:delegate completion:^{ stopped = YES; }];
+    dispatch_semaphore_signal(releaseGate);
+    PumpUntil(^{ return stopped; }, @"Batch shutdown");
+    Check(atomic_load(&completed) == 6 && [order isEqualToArray:@[@1, @2, @3, @4, @5, @6]],
+          @"Batch swapping must preserve FIFO, exactly-once execution and active shutdown draining");
+    NSLog(@"PASS: executor batch ordering, nested submissions, pause cutoff, resume and shutdown draining");
+}
+
 @interface FrameClockTestView : AsyncGLView
 @property (nonatomic) NSUInteger frames;
 @property (nonatomic) BOOL workerPaused;
@@ -491,6 +579,7 @@ int main(void) {
         TestOutput(YES);
         TestOutputLifecycle();
         TestResumeDuringOutputUpdate();
+        TestExecutorBatches();
         TestOffscreenFrameClock();
         TestOffscreenPreparation(NO, NO);
         TestOffscreenPreparation(YES, NO);

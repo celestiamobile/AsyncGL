@@ -6,7 +6,19 @@
 #include <stdatomic.h>
 
 static _Atomic(NSUInteger) presentations;
+static _Atomic(NSUInteger) uniformLookups;
+static _Atomic(NSUInteger) swapIntervalUpdates;
 static GLubyte presentedPixels[4][4];
+
+static GLint CountUniformLookup(GLuint program, const GLchar *name) {
+    ++uniformLookups;
+    return glGetUniformLocation(program, name);
+}
+
+static EGLBoolean CountSwapInterval(EGLDisplay display, EGLint interval) {
+    ++swapIntervalUpdates;
+    return eglSwapInterval(display, interval);
+}
 
 static EGLBoolean CaptureMirrorSwap(EGLDisplay display, EGLSurface surface) {
     EGLint width = 0, height = 0;
@@ -21,7 +33,11 @@ static EGLBoolean CaptureMirrorSwap(EGLDisplay display, EGLSurface surface) {
 }
 
 #define eglSwapBuffers CaptureMirrorSwap
+#define eglSwapInterval CountSwapInterval
+#define glGetUniformLocation CountUniformLookup
 #import "../AsyncGL/AsyncGLMirroringTarget.m"
+#undef glGetUniformLocation
+#undef eglSwapInterval
 #undef eglSwapBuffers
 #import "../AsyncGL/AsyncGLMirroringView.m"
 #import "../AsyncGL/AsyncGLView.m"
@@ -120,6 +136,8 @@ static void TestMirroring(BOOL multisample) {
 
     GLuint textures[2], vertexArray, sampler, unpackBuffer, framebuffers[2], renderbuffer;
     EGLSurface source = EGL_NO_SURFACE;
+    NSUInteger initialLookups = uniformLookups;
+    NSUInteger initialIntervalUpdates = swapIntervalUpdates;
     for (int pass = 0; pass < 2; ++pass) {
         CGSize size = pass == 0 ? CGSizeMake(24, 16) : CGSizeMake(36, 20);
         CGSize targetSize = pass == 0 ? CGSizeMake(20, 12) : CGSizeMake(28, 16);
@@ -224,6 +242,10 @@ static void TestMirroring(BOOL multisample) {
               glIsEnabled(GL_RASTERIZER_DISCARD) && glIsEnabled(GL_SAMPLE_COVERAGE) &&
               glIsEnabled(GL_SAMPLE_ALPHA_TO_COVERAGE), @"Rasterization state was not restored");
         CheckGLError(@"State verification");
+        DrawMirrorOffMain(target, size, display, config, context, source);
+        Check(uniformLookups == initialLookups + 1, @"ANGLE mirroring must cache the uniform location across frames and resize");
+        Check(swapIntervalUpdates == initialIntervalUpdates + pass + 1,
+              @"ANGLE mirroring must configure swap interval once per surface");
 
         glDeleteTextures(2, textures);
         glDeleteVertexArrays(1, &vertexArray);
@@ -245,6 +267,8 @@ static void TestMirroring(BOOL multisample) {
     [target updateSize:CGSizeMake(28, 16) visible:YES];
     DrawMirrorOffMain(target, CGSizeMake(36, 20), display, config, context, source);
     Check(presentations == before + 1, @"Mirroring did not resume after reattachment");
+    Check(uniformLookups == initialLookups + 2 && swapIntervalUpdates == initialIntervalUpdates + 3,
+          @"Reattached mirroring must configure its new program and surface");
     CheckColor(presentedPixels[0], 255, 0, 0);
     CheckColor(presentedPixels[3], 255, 255, 0);
     [target clear];

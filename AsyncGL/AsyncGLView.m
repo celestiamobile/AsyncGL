@@ -215,6 +215,9 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 @property (nonatomic) CAEAGLLayer *eaglLayer;
 #else
 @property (nonatomic) GLuint renderColorbuffer;
+@property (nonatomic) GLuint resolveFramebuffer;
+@property (nonatomic) GLuint resolveColorbuffer;
+@property (nonatomic) CGSize resolveBufferSize;
 @property (nonatomic) CGLOpenGLProfile internalAPI;
 @property (nonatomic) CGLContextObj renderContext;
 @property (nonatomic) PassthroughGLLayer *glLayer;
@@ -440,29 +443,40 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
         GLsizei width = (GLsizei)_savedBufferSize.width;
         GLsizei height = (GLsizei)_savedBufferSize.height;
 #if TARGET_OSX_OR_CATALYST
-        // CAOpenGLLayer manages its own framebuffer, so here we need to create a framebuffer on our own
-        GLuint tempFramebuffer;
-        GLuint tempRenderbuffer;
-        glGenFramebuffers(1, &tempFramebuffer);
-        glBindFramebuffer(GL_FRAMEBUFFER, tempFramebuffer);
-        glGenRenderbuffers(1, &tempRenderbuffer);
-        glBindRenderbuffer(GL_RENDERBUFFER, tempRenderbuffer);
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, width, height);
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, tempRenderbuffer);
+        GLint previousReadFramebuffer, previousRenderbuffer;
+        glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previousReadFramebuffer);
+        glGetIntegerv(GL_RENDERBUFFER_BINDING, &previousRenderbuffer);
+        if (_resolveFramebuffer == 0) {
+            glGenFramebuffers(1, &_resolveFramebuffer);
+            glGenRenderbuffers(1, &_resolveColorbuffer);
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, _resolveFramebuffer);
+        GLenum storageError = GL_NO_ERROR;
+        if (!CGSizeEqualToSize(_resolveBufferSize, _savedBufferSize)) {
+            _resolveBufferSize = CGSizeZero;
+            glBindRenderbuffer(GL_RENDERBUFFER, _resolveColorbuffer);
+            glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, width, height);
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, _resolveColorbuffer);
+            storageError = glGetError();
+        }
 
         GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-        if (status != GL_FRAMEBUFFER_COMPLETE) {
+        if (storageError != GL_NO_ERROR) {
+            NSLog(@"Screenshot resolve storage allocation failed: %u", storageError);
+        } else if (status != GL_FRAMEBUFFER_COMPLETE) {
             NSLog(@"framebuffer not complete %d", status);
         } else {
+            _resolveBufferSize = _savedBufferSize;
             glBindFramebuffer(GL_READ_FRAMEBUFFER, _framebuffer);
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, tempFramebuffer);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, _resolveFramebuffer);
             glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
-            glBindFramebuffer(GL_FRAMEBUFFER, tempFramebuffer);
+            glBindFramebuffer(GL_FRAMEBUFFER, _resolveFramebuffer);
             if (resolve != nil)
                 resolve();
         }
-        glDeleteFramebuffers(1, &tempFramebuffer);
-        glDeleteRenderbuffers(1, &tempRenderbuffer);
+        glBindRenderbuffer(GL_RENDERBUFFER, previousRenderbuffer);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, previousReadFramebuffer);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, previousFramebuffer);
 #else
         glBindFramebuffer(GL_READ_FRAMEBUFFER, _sampleFramebuffer);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, _framebuffer);
@@ -477,10 +491,9 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
         glBindFramebuffer(GL_FRAMEBUFFER, _framebuffer);
         if (resolve != nil)
             resolve();
-#endif
 
-        // Restore previous framebuffer binding
         glBindFramebuffer(GL_FRAMEBUFFER, previousFramebuffer);
+#endif
     } else {
         if (resolve != nil)
             resolve();
@@ -653,6 +666,9 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
     }
     _renderContext = NULL;
     _renderColorbuffer = 0;
+    _resolveFramebuffer = 0;
+    _resolveColorbuffer = 0;
+    _resolveBufferSize = CGSizeZero;
 #endif
     _framebuffer = 0;
     _depthBuffer = 0;
@@ -697,8 +713,10 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 }
 
 - (void)renderThreadMain {
+    NSMutableArray *taskBuffer = [[NSMutableArray alloc] init];
     while (YES) {
         @autoreleasepool {
+            [taskBuffer removeAllObjects];
             AsyncGLViewEvent event = AsyncGLViewEventNone;
             BOOL needsDrawn = NO;
 
@@ -726,9 +744,16 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
             NSArray *tasks = nil;
             NSUInteger taskCount = canRunTasks ? (paused ? _pauseTaskCount : _tasks.count) : 0;
             if (taskCount > 0) {
-                NSRange range = NSMakeRange(0, taskCount);
-                tasks = [_tasks subarrayWithRange:range];
-                [_tasks removeObjectsInRange:range];
+                if (taskCount == _tasks.count) {
+                    NSMutableArray *queuedTasks = _tasks;
+                    _tasks = taskBuffer;
+                    taskBuffer = queuedTasks;
+                    tasks = queuedTasks;
+                } else {
+                    NSRange range = NSMakeRange(0, taskCount);
+                    tasks = [_tasks subarrayWithRange:range];
+                    [_tasks removeObjectsInRange:range];
+                }
             }
             NSArray *discardedTasks = nil;
             if (requestExitThread && _tasks.count > 0) {
@@ -1352,6 +1377,15 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
     }
 
 #if TARGET_OSX_OR_CATALYST
+    if (_resolveFramebuffer != 0) {
+        glDeleteFramebuffers(1, &_resolveFramebuffer);
+        _resolveFramebuffer = 0;
+    }
+    if (_resolveColorbuffer != 0) {
+        glDeleteRenderbuffers(1, &_resolveColorbuffer);
+        _resolveColorbuffer = 0;
+    }
+    _resolveBufferSize = CGSizeZero;
     if (_renderColorbuffer != 0) {
         glDeleteRenderbuffers(1, &_renderColorbuffer);
         _renderColorbuffer = 0;

@@ -2,6 +2,19 @@
 
 A framework that allows rendering OpenGL (ES) contents on an NSThread.
 
+On iOS/Catalyst and macOS 14+, display-link callbacks run on a dedicated thread,
+so main-thread stalls do not delay frame requests. Scene/screen setup remains on
+main, and GL work stays on the render thread. A non-renderable view suspends its
+display clock without suspending executor work; visibility restores the clock.
+Explicit pause and the opt-in offscreen timer retain their existing behavior.
+
+Override `drawGL(_:targetTimestamp:)` to receive the display link's estimated
+presentation time, using the same clock as `CACurrentMediaTime()`. It can already
+be in the past; it is not a presentation guarantee. Coalesced requests retain the
+latest requested timestamp. Zero means no display deadline (manual/output-driven
+frames, the offscreen timer, or the legacy macOS clock). The default implementation
+calls the existing `drawGL(_:)`, so existing subclasses need no changes.
+
 Executor work wakes an initialized, unpaused render thread without waiting for a
 frame. Asynchronous work queued before initialization or while paused is deferred.
 Synchronous calls from other threads raise `NSInternalInconsistencyException`

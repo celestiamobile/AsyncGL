@@ -177,6 +177,8 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 @property (nonatomic) BOOL suspendedFlag;
 @property (nonatomic) NSUInteger pauseTaskCount;
 @property (nonatomic) AsyncGLViewEvent event;
+@property (nonatomic) CFTimeInterval pendingTargetTimestamp;
+@property (nonatomic) CFTimeInterval renderTargetTimestamp;
 @property (nonatomic) BOOL contextsCreated;
 @property (nonatomic) BOOL initializationDeferred;
 @property (nonatomic) BOOL didPrepareGL;
@@ -527,8 +529,13 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 }
 
 - (void)requestRender {
+    [self requestRenderWithTargetTimestamp:0];
+}
+
+- (void)requestRenderWithTargetTimestamp:(CFTimeInterval)targetTimestamp {
     [_condition lock];
     _event |= AsyncGLViewEventDraw;
+    _pendingTargetTimestamp = targetTimestamp;
     [_condition signal];
     [_condition unlock];
 }
@@ -699,6 +706,8 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 #endif
 
     _event = AsyncGLViewEventNone;
+    _pendingTargetTimestamp = 0;
+    _renderTargetTimestamp = 0;
     _condition = [[NSCondition alloc] init];
     _renderLock = OS_UNFAIR_LOCK_INIT;
     _renderThread = [[NSThread alloc] initWithTarget:self selector:@selector(renderThreadMain) object:nil];
@@ -734,6 +743,9 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 
             BOOL requestExitThread = _requestExitThread;
             event = _event;
+            CFTimeInterval targetTimestamp = _pendingTargetTimestamp;
+            if (!_suspendedFlag)
+                _pendingTargetTimestamp = 0;
             // Servicing output changes must not consume a draw queued during pause.
             _event &= AsyncGLViewEventPause | (_suspendedFlag ? AsyncGLViewEventDraw : 0);
             if (_suspendedFlag)
@@ -827,8 +839,11 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
             BOOL canRender = !_suspendedFlag && (_event & AsyncGLViewEventPause) == 0 && !_requestExitThread;
             needsDrawn = needsDrawn && canRender;
             [_condition unlock];
-            if (needsDrawn)
+            if (needsDrawn) {
+                _renderTargetTimestamp = targetTimestamp;
                 [self render];
+                _renderTargetTimestamp = 0;
+            }
             if (canRender && [_activeSampleBufferOutput hasPendingFrames]) {
                 [self makeRenderContextCurrent];
                 [_activeSampleBufferOutput pollPendingFrames];
@@ -1272,16 +1287,21 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 {
     [self updateBuffersSize:size];
 
-#if TARGET_OSX_OR_CATALYST || defined(USE_EGL)
-    [_delegate _drawGL:size];
-#else
+#if !TARGET_OSX_OR_CATALYST && !defined(USE_EGL)
+    if (_msaaEnabled)
+        glBindFramebuffer(GL_FRAMEBUFFER, _sampleFramebuffer);
+#endif
+
+    id<AsyncGLViewDelegate> delegate = _delegate;
+    if ([delegate respondsToSelector:@selector(_drawGL:targetTimestamp:)])
+        [delegate _drawGL:size targetTimestamp:_renderTargetTimestamp];
+    else
+        [delegate _drawGL:size];
+
+#if !TARGET_OSX_OR_CATALYST && !defined(USE_EGL)
     if (_msaaEnabled) {
         GLsizei width = (GLsizei)size.width;
         GLsizei height = (GLsizei)size.height;
-        glBindFramebuffer(GL_FRAMEBUFFER, _sampleFramebuffer);
-
-        [_delegate _drawGL:size];
-
         glBindFramebuffer(GL_READ_FRAMEBUFFER, _sampleFramebuffer);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, _framebuffer);
 
@@ -1293,8 +1313,6 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
             glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
             glInvalidateFramebuffer(GL_READ_FRAMEBUFFER, 2, attachments);
         }
-    } else {
-        [_delegate _drawGL:size];
     }
 #endif
 }
@@ -1519,8 +1537,15 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
     }
     _drawableSize = newSize;
     _shouldPresent = shouldRender;
+    BOOL wasRenderable = _shouldRender;
     _shouldRender = shouldRender || ([self _allowsOffscreenRendering] && frameSize.width > 0 && frameSize.height > 0);
+    BOOL renderable = _shouldRender;
     os_unfair_lock_unlock(&_renderLock);
+    if (renderable != wasRenderable) {
+        id<AsyncGLViewDelegate> delegate = _delegate;
+        if ([delegate respondsToSelector:@selector(_renderabilityChanged:)])
+            [delegate _renderabilityChanged:renderable];
+    }
 }
 
 #if !TARGET_OS_OSX

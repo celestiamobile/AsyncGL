@@ -573,6 +573,8 @@ static void TestOffscreenFrameClock(void) {
     NSLog(@"PASS: offscreen clock, inactivity, detachment, explicit pause, restart and shutdown");
 }
 
+#import "DisplayLinkTests.h"
+
 int main(void) {
     @autoreleasepool {
         TestOutput(NO);
@@ -580,6 +582,9 @@ int main(void) {
         TestOutputLifecycle();
         TestResumeDuringOutputUpdate();
         TestExecutorBatches();
+        TestTargetTimestamps();
+        TestDisplayLinkScheduling();
+        TestDisplayLinkConfigurationRaces();
         TestOffscreenFrameClock();
         TestOffscreenPreparation(NO, NO);
         TestOffscreenPreparation(YES, NO);

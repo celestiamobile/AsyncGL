@@ -6,16 +6,157 @@
 #import "AsyncGLViewController.h"
 #import "AsyncGLView+Private.h"
 #import "AsyncGLExecutor+Private.h"
+#include <os/lock.h>
 
 #if TARGET_OS_OSX
 @import QuartzCore;
 #endif
+
+API_AVAILABLE(macos(14.0), macCatalyst(16.0))
+@interface AsyncGLDisplayLinkDriver : NSObject {
+    os_unfair_lock _lock;
+    __weak AsyncGLView *_view;
+    // After startup, only the clock thread accesses the link and _running.
+    CADisplayLink *_link;
+    BOOL _running;
+    // Configuration and run-loop handles are protected by _lock.
+    CFRunLoopRef _runLoop;
+    CFRunLoopSourceRef _controlSource;
+    BOOL _paused;
+    BOOL _stopped;
+    CAFrameRateRange _frameRateRange;
+}
+@property (nonatomic, readonly) NSThread *thread;
+- (instancetype)initWithView:(AsyncGLView *)view;
+- (void)startWithDisplayLink:(CADisplayLink *)link;
+- (void)updateWithPaused:(BOOL)paused frameRateRange:(CAFrameRateRange)range;
+- (void)invalidate;
+- (void)requestRender:(CADisplayLink *)link;
+- (void)applyConfiguration;
+@end
+
+@implementation AsyncGLDisplayLinkDriver
+- (instancetype)initWithView:(AsyncGLView *)view {
+    if ((self = [super init])) {
+        _lock = OS_UNFAIR_LOCK_INIT;
+        _view = view;
+        _paused = YES;
+        _frameRateRange = CAFrameRateRangeDefault;
+    }
+    return self;
+}
+
+- (void)startWithDisplayLink:(CADisplayLink *)link {
+    if (link == nil) {
+        NSLog(@"AsyncGL could not create a display link");
+        return;
+    }
+    _link = link;
+    __weak AsyncGLDisplayLinkDriver *weakSelf = self;
+    _thread = [[NSThread alloc] initWithBlock:^{
+        [weakSelf run];
+    }];
+    _thread.name = @"AsyncGL Display Link";
+    _thread.qualityOfService = NSQualityOfServiceUserInteractive;
+    [_thread start];
+}
+
+- (void)signalConfigurationChangeLocked {
+    if (_controlSource != NULL) {
+        CFRunLoopSourceSignal(_controlSource);
+        CFRunLoopWakeUp(_runLoop);
+    }
+}
+
+- (void)updateWithPaused:(BOOL)paused frameRateRange:(CAFrameRateRange)range {
+    os_unfair_lock_lock(&_lock);
+    _paused = paused;
+    _frameRateRange = range;
+    [self signalConfigurationChangeLocked];
+    os_unfair_lock_unlock(&_lock);
+}
+
+- (void)invalidate {
+    os_unfair_lock_lock(&_lock);
+    _stopped = YES;
+    [self signalConfigurationChangeLocked];
+    os_unfair_lock_unlock(&_lock);
+}
+
+- (void)requestRender:(CADisplayLink *)link {
+    os_unfair_lock_lock(&_lock);
+    // Serialize submission with pause/invalidation, not just the flag check.
+    if (!_stopped && !_paused)
+        [_view requestRenderWithTargetTimestamp:link.targetTimestamp];
+    os_unfair_lock_unlock(&_lock);
+}
+
+- (void)applyConfiguration {
+    os_unfair_lock_lock(&_lock);
+    BOOL stopped = _stopped;
+    BOOL paused = _paused;
+    CAFrameRateRange range = _frameRateRange;
+    os_unfair_lock_unlock(&_lock);
+    if (stopped) {
+        _running = NO;
+        [_link invalidate];
+        CFRunLoopStop(CFRunLoopGetCurrent());
+    } else {
+        _link.preferredFrameRateRange = range;
+        _link.paused = paused;
+    }
+}
+
+static void AsyncGLApplyDisplayLinkConfiguration(void *info) API_AVAILABLE(macos(14.0), macCatalyst(16.0));
+static void AsyncGLApplyDisplayLinkConfiguration(void *info) {
+    [(__bridge AsyncGLDisplayLinkDriver *)info applyConfiguration];
+}
+
+- (void)run {
+    @autoreleasepool {
+        CFRunLoopRef runLoop = CFRunLoopGetCurrent();
+        CFRunLoopSourceContext context = {0};
+        context.info = (__bridge void *)self;
+        context.perform = AsyncGLApplyDisplayLinkConfiguration;
+        CFRunLoopSourceRef source = CFRunLoopSourceCreate(kCFAllocatorDefault, 0, &context);
+        if (source == NULL) {
+            NSLog(@"AsyncGL could not create its display-link control source");
+            [_link invalidate];
+            _link = nil;
+            return;
+        }
+        // The control source keeps the run loop alive even when the link is paused.
+        CFRunLoopAddSource(runLoop, source, kCFRunLoopCommonModes);
+        os_unfair_lock_lock(&_lock);
+        _runLoop = runLoop;
+        _controlSource = source;
+        os_unfair_lock_unlock(&_lock);
+        _running = YES;
+        [self applyConfiguration];
+        if (_running)
+            [_link addToRunLoop:NSRunLoop.currentRunLoop forMode:NSRunLoopCommonModes];
+        while (_running) {
+            @autoreleasepool {
+                [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:NSDate.distantFuture];
+            }
+        }
+        os_unfair_lock_lock(&_lock);
+        _runLoop = NULL;
+        _controlSource = NULL;
+        os_unfair_lock_unlock(&_lock);
+        CFRunLoopRemoveSource(runLoop, source, kCFRunLoopCommonModes);
+        CFRelease(source);
+        _link = nil;
+    }
+}
+@end
 
 @interface AsyncGLViewController () <AsyncGLViewDelegate>
 
 @property (nonatomic) AsyncGLExecutor *internalExecutor;
 
 @property (nonatomic) NSInteger internalPreferredFramesPerSecond;
+@property (nonatomic) AsyncGLDisplayLinkDriver *displayLinkDriver API_AVAILABLE(macos(14.0), macCatalyst(16.0));
 #if !TARGET_OS_OSX
 @property (nonatomic) CADisplayLink *displayLink;
 @property (weak, nonatomic) UIWindowScene *internalWindowScene;
@@ -30,6 +171,7 @@
 @property (nonatomic) AsyncGLAPI api;
 @property (nonatomic) BOOL shuttingDown;
 @property (nonatomic) BOOL resumeOffscreenAfterPreparation;
+@property (nonatomic) BOOL displayLinkRenderable;
 @end
 
 @implementation AsyncGLViewController
@@ -115,10 +257,11 @@
         dispatch_source_cancel(_displaySource);
         _displaySource = nil;
     }
-    if (_displayLink) {
-        [_displayLink invalidate];
-        _displayLink = nil;
+    if (@available(macOS 14.0, *)) {
+        [_displayLinkDriver invalidate];
+        _displayLinkDriver = nil;
     }
+    _displayLink = nil;
 
 #if TARGET_OS_OSX
     if (_cvDisplayLink != NULL) {
@@ -159,12 +302,12 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
         // Scene-bound links can stop ticking on noninteractive external displays.
         // Keep automatic scene retargeting for application windows only.
         if (!externalDisplay)
-            link = [scene displayLinkWithTarget:self selector:@selector(requestRender)];
+            link = [scene displayLinkWithTarget:_displayLinkDriver selector:@selector(requestRender:)];
     }
     if (link == nil)
-        link = [scene.screen displayLinkWithTarget:self selector:@selector(requestRender)];
+        link = [scene.screen displayLinkWithTarget:_displayLinkDriver selector:@selector(requestRender:)];
     if (link == nil)
-        link = [CADisplayLink displayLinkWithTarget:self selector:@selector(requestRender)];
+        link = [CADisplayLink displayLinkWithTarget:_displayLinkDriver selector:@selector(requestRender:)];
     return link;
 }
 #endif
@@ -237,11 +380,11 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
     _paused = paused;
     [self updateOffscreenFrameRate];
 
-    if (_displayLink != nil)
-        [_displayLink setPaused:paused];
+    if (@available(macOS 14.0, *))
+        [self updateDisplayLinkConfiguration];
 #if TARGET_OS_OSX
-    else if (_cvDisplayLink != NULL)
-        paused ? CVDisplayLinkStop(_cvDisplayLink) : CVDisplayLinkStart(_cvDisplayLink);
+    if (_cvDisplayLink != NULL)
+        paused || !_displayLinkRenderable ? CVDisplayLinkStop(_cvDisplayLink) : CVDisplayLinkStart(_cvDisplayLink);
 #endif
 
     paused ? [_glView pause] : [_glView resume];
@@ -273,6 +416,20 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 - (void)_drawGL:(CGSize)size
 {
     [self drawGL:size];
+}
+
+- (void)_drawGL:(CGSize)size targetTimestamp:(CFTimeInterval)targetTimestamp {
+    [self drawGL:size targetTimestamp:targetTimestamp];
+}
+
+- (void)_renderabilityChanged:(BOOL)renderable {
+    _displayLinkRenderable = renderable;
+    if (@available(macOS 14.0, *))
+        [self updateDisplayLinkConfiguration];
+#if TARGET_OS_OSX
+    else if (_cvDisplayLink != NULL)
+        _paused || !renderable ? CVDisplayLinkStop(_cvDisplayLink) : CVDisplayLinkStart(_cvDisplayLink);
+#endif
 }
 
 - (void)_clearGL
@@ -310,13 +467,17 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
     [NSException raise:NSInternalInconsistencyException format:@"You must override %@ in a subclass", NSStringFromSelector(_cmd)];
 }
 
+- (void)drawGL:(CGSize)size targetTimestamp:(CFTimeInterval)targetTimestamp {
+    [self drawGL:size];
+}
+
 - (void)setPreferredFramesPerSecond:(NSInteger)preferredFramesPerSecond {
     _internalPreferredFramesPerSecond = preferredFramesPerSecond;
     [self updateOffscreenFrameRate];
 #if TARGET_OS_OSX
     if (@available(macOS 14.0, *))
 #endif
-        [self setPreferredFramesPerSecond:preferredFramesPerSecond displayLink:_displayLink];
+        [self updateDisplayLinkConfiguration];
 }
 
 #if !TARGET_OS_OSX
@@ -333,10 +494,10 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
     if (windowScene == nil)
         return;
 
+    _displayLinkDriver = [[AsyncGLDisplayLinkDriver alloc] initWithView:_glView];
     _displayLink = [self _createDisplayLink];
-    _displayLink.paused = _paused;
-    [self setPreferredFramesPerSecond:_internalPreferredFramesPerSecond displayLink:_displayLink];
-    [_displayLink addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSRunLoopCommonModes];
+    [self updateDisplayLinkConfiguration];
+    [_displayLinkDriver startWithDisplayLink:_displayLink];
 }
 #else
 - (void)setScreen:(NSScreen *)screen
@@ -352,12 +513,12 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
     if (screen == nil)
         return;
     if (@available(macOS 14.0, *)) {
-        _displayLink = [screen displayLinkWithTarget:self selector:@selector(requestRender)];
+        _displayLinkDriver = [[AsyncGLDisplayLinkDriver alloc] initWithView:_glView];
+        _displayLink = [screen displayLinkWithTarget:_displayLinkDriver selector:@selector(requestRender:)];
         if (_displayLink == nil)
-            _displayLink = [self.view displayLinkWithTarget:self selector:@selector(requestRender)];
-        _displayLink.paused = _paused;
-        [self setPreferredFramesPerSecond:_internalPreferredFramesPerSecond displayLink:_displayLink];
-        [_displayLink addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSRunLoopCommonModes];
+            _displayLink = [self.view displayLinkWithTarget:_displayLinkDriver selector:@selector(requestRender:)];
+        [self updateDisplayLinkConfiguration];
+        [_displayLinkDriver startWithDisplayLink:_displayLink];
     } else {
         NSNumber *directDisplayIDNumber = screen.deviceDescription[@"NSScreenNumber"];
         if (directDisplayIDNumber != nil)
@@ -365,7 +526,7 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
         else
             CVDisplayLinkCreateWithActiveCGDisplays(&self->_cvDisplayLink);
         CVDisplayLinkSetOutputCallback(self.cvDisplayLink, displayCallback, (__bridge void *)(self));
-        if (!_paused)
+        if (!_paused && _displayLinkRenderable)
             CVDisplayLinkStart(self.cvDisplayLink);
     }
 }
@@ -424,17 +585,20 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 #endif
 }
 
-- (void)setPreferredFramesPerSecond:(NSInteger)preferredFramesPerSecond displayLink:(CADisplayLink *)displayLink API_AVAILABLE(ios(15.0), tvos(15.0), macos(14.0)) {
+- (void)updateDisplayLinkConfiguration API_AVAILABLE(macos(14.0), macCatalyst(16.0)) {
+    NSInteger preferredFramesPerSecond = _internalPreferredFramesPerSecond;
+    CAFrameRateRange range;
     if (preferredFramesPerSecond >= 0) {
-        [displayLink setPreferredFrameRateRange:CAFrameRateRangeMake(preferredFramesPerSecond / 2, preferredFramesPerSecond, preferredFramesPerSecond)];
+        range = CAFrameRateRangeMake(preferredFramesPerSecond / 2, preferredFramesPerSecond, preferredFramesPerSecond);
     } else {
 #if !TARGET_OS_OSX
         CGFloat maxFramesPerSecond = [self.internalWindowScene.screen maximumFramesPerSecond];
 #else
         CGFloat maxFramesPerSecond = [self.internalScreen maximumFramesPerSecond];
 #endif
-        [displayLink setPreferredFrameRateRange:CAFrameRateRangeMake(maxFramesPerSecond / 2, maxFramesPerSecond, maxFramesPerSecond)];
+        range = CAFrameRateRangeMake(maxFramesPerSecond / 2, maxFramesPerSecond, maxFramesPerSecond);
     }
+    [_displayLinkDriver updateWithPaused:_paused || !_displayLinkRenderable frameRateRange:range];
 }
 
 @end

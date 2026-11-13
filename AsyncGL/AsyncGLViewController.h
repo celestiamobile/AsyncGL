@@ -49,6 +49,11 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (BOOL)prepareGL:(CGSize)size samples:(NSInteger)samples NS_SWIFT_NONISOLATED;
 - (void)drawGL:(CGSize)size NS_SWIFT_NONISOLATED;
+// Called on the render thread. The timestamp is the display link's estimated
+// presentation time in CACurrentMediaTime's time base; it may already be past.
+// Zero means no display deadline (manual requests, offscreen timer, legacy clock).
+// The default implementation calls drawGL: for existing subclasses.
+- (void)drawGL:(CGSize)size targetTimestamp:(CFTimeInterval)targetTimestamp NS_SWIFT_NONISOLATED;
 - (void)clearGL NS_SWIFT_NONISOLATED;
 
 // Call on main before releasing the controller. Cleanup finishes asynchronously

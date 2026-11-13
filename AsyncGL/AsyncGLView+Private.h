@@ -19,6 +19,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)_viewWillMoveToWindow:(nullable NSWindow *)window;
 #endif
 
+@optional
+- (void)_drawGL:(CGSize)size targetTimestamp:(CFTimeInterval)targetTimestamp;
+- (void)_renderabilityChanged:(BOOL)renderable;
+
 @end
 
 @interface AsyncGLView ()
@@ -31,6 +35,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)commonSetup;
 - (void)requestRender;
+- (void)requestRenderWithTargetTimestamp:(CFTimeInterval)targetTimestamp;
 - (void)enqueueTask:(void(^)(void))task;
 - (void)enqueueTask:(void(^)(void))task requiringActiveContext:(BOOL)requiresActiveContext;
 - (void)render;

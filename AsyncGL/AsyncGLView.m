@@ -1313,6 +1313,14 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
             glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
             glInvalidateFramebuffer(GL_READ_FRAMEBUFFER, 2, attachments);
         }
+    } else {
+        glBindFramebuffer(GL_FRAMEBUFFER, _framebuffer);
+        GLenum attachment = GL_DEPTH_ATTACHMENT;
+        if (_internalAPI == kEAGLRenderingAPIOpenGLES2) {
+            glDiscardFramebufferEXT(GL_FRAMEBUFFER, 1, &attachment);
+        } else {
+            glInvalidateFramebuffer(GL_FRAMEBUFFER, 1, &attachment);
+        }
     }
 #endif
 }

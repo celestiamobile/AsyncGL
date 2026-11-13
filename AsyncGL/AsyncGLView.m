@@ -620,11 +620,11 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
     #ifdef USE_EGL
         eglSwapBuffers(_display, _renderSurface);
     #else
-        glFlush();
     #if !TARGET_OSX_OR_CATALYST
         glBindRenderbuffer(GL_RENDERBUFFER, _mainColorbuffer);
         [_renderContext presentRenderbuffer:GL_RENDERBUFFER];
     #else
+        glFlush();
         [_glLayer display];
     #endif
     #endif

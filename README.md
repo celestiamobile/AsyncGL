@@ -2,6 +2,13 @@
 
 A framework that allows rendering OpenGL (ES) contents on an NSThread.
 
+The controller initializer requires a `multiThreaded` argument; pass `false` to
+preserve the previous behavior. Passing `true` enables native driver multithreading
+using `EAGLContext.multiThreaded` or CGL's `kCGLCEMPEngine` on the render context.
+It is a no-op with EGL/ANGLE and does not permit concurrent application access
+to a context. Benchmark before enabling: it can reduce render-thread CPU work
+without reducing total CPU usage or improving frame rate.
+
 On iOS/Catalyst and macOS 14+, display-link callbacks run on a dedicated thread,
 so main-thread stalls do not delay frame requests. Scene/screen setup remains on
 main, and GL work stays on the render thread. A non-renderable view suspends its

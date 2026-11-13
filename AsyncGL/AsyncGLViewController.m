@@ -167,6 +167,7 @@ static void AsyncGLApplyDisplayLinkConfiguration(void *info) {
 #endif
 @property (nonatomic) dispatch_source_t displaySource;
 @property (nonatomic) BOOL msaaEnabled;
+@property (nonatomic) BOOL multiThreaded;
 @property (atomic, getter=isReady) BOOL ready;
 @property (nonatomic) AsyncGLAPI api;
 @property (nonatomic) BOOL shuttingDown;
@@ -178,15 +179,12 @@ static void AsyncGLApplyDisplayLinkConfiguration(void *info) {
 
 #pragma mark - lifecycle
 
-#if !TARGET_OS_OSX
-- (instancetype)initWithMSAAEnabled:(BOOL)msaaEnabled initialFrameRate:(NSInteger)frameRate api:(AsyncGLAPI)api executor:(AsyncGLExecutor *)executor
-#else
-- (instancetype)initWithMSAAEnabled:(BOOL)msaaEnabled initialFrameRate:(NSInteger)frameRate api:(AsyncGLAPI)api executor:(AsyncGLExecutor *)executor
-#endif
+- (instancetype)initWithMSAAEnabled:(BOOL)msaaEnabled initialFrameRate:(NSInteger)frameRate api:(AsyncGLAPI)api multiThreaded:(BOOL)multiThreaded executor:(AsyncGLExecutor *)executor
 {
     self = [super initWithNibName:nil bundle:nil];
     if (self) {
         _msaaEnabled = msaaEnabled;
+        _multiThreaded = multiThreaded;
         _paused = YES;
         _internalPreferredFramesPerSecond = frameRate;
         _displayLink = nil;
@@ -216,6 +214,7 @@ static void AsyncGLApplyDisplayLinkConfiguration(void *info) {
     _glView = [AsyncGLView new];
     _glView.api = _api;
     _glView.msaaEnabled = _msaaEnabled;
+    _glView.multiThreaded = _multiThreaded;
     [_glView commonSetup];
     _glView.rendersWhileOffscreen = _rendersWhileOffscreen;
     _glView.delegate = self;

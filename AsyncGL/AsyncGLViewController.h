@@ -37,11 +37,9 @@ NS_ASSUME_NONNULL_BEGIN
 // background OpenGL/Metal permission on iOS.
 @property (nonatomic) BOOL rendersWhileOffscreen;
 
-#if !TARGET_OS_OSX
-- (instancetype)initWithMSAAEnabled:(BOOL)msaaEnabled initialFrameRate:(NSInteger)frameRate api:(AsyncGLAPI)api executor:(AsyncGLExecutor *)executor NS_DESIGNATED_INITIALIZER;
-#else
-- (instancetype)initWithMSAAEnabled:(BOOL)msaaEnabled initialFrameRate:(NSInteger)frameRate api:(AsyncGLAPI)api executor:(AsyncGLExecutor *)executor NS_DESIGNATED_INITIALIZER;
-#endif
+// Opt-in native driver multithreading; no effect with EGL/ANGLE.
+// Contexts still require serialized application access.
+- (instancetype)initWithMSAAEnabled:(BOOL)msaaEnabled initialFrameRate:(NSInteger)frameRate api:(AsyncGLAPI)api multiThreaded:(BOOL)multiThreaded executor:(AsyncGLExecutor *)executor NS_DESIGNATED_INITIALIZER;
 + (instancetype)new NS_UNAVAILABLE;
 - (instancetype)init NS_UNAVAILABLE;
 - (instancetype)initWithNibName:(nullable NSString *)nibNameOrNil bundle:(nullable NSBundle *)nibBundleOrNil NS_UNAVAILABLE;

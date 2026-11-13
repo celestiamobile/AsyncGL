@@ -1096,6 +1096,13 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
     _renderContext = [[EAGLContext alloc] initWithAPI:_mainContext.API sharegroup:_mainContext.sharegroup];
     if (_renderContext == nil)
         return NO;
+    if (_multiThreaded) {
+        _renderContext.multiThreaded = YES;
+        if (!_renderContext.isMultiThreaded) {
+            NSLog(@"EAGLContext failed to enable driver multithreading");
+            return NO;
+        }
+    }
 
     __block CGSize size;
     dispatch_sync(dispatch_get_main_queue(), ^{
@@ -1139,6 +1146,14 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
         return NO;
 
     [self makeRenderContextCurrent];
+
+    if (_multiThreaded) {
+        error = CGLEnable(_renderContext, kCGLCEMPEngine);
+        if (error != kCGLNoError) {
+            NSLog(@"CGLEnable(kCGLCEMPEngine) returned error %d", error);
+            return NO;
+        }
+    }
 
     if (_msaaEnabled) {
         glEnable(GL_MULTISAMPLE);

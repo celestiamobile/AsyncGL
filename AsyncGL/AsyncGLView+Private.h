@@ -28,6 +28,7 @@ NS_ASSUME_NONNULL_BEGIN
 @interface AsyncGLView ()
 
 @property (nonatomic) BOOL msaaEnabled;
+@property (nonatomic) BOOL multiThreaded;
 @property (nonatomic) AsyncGLAPI api;
 @property (nonatomic, weak) id<AsyncGLViewDelegate> delegate;
 

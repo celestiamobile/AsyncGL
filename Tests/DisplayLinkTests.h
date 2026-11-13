@@ -152,7 +152,7 @@ static void TestDisplayLinkScheduling(void) {
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
     TimestampClockController *controller = [[TimestampClockController alloc]
-        initWithMSAAEnabled:NO initialFrameRate:60 api:AsyncGLAPIOpenGLCore41 executor:[AsyncGLExecutor new]];
+        initWithMSAAEnabled:NO initialFrameRate:60 api:AsyncGLAPIOpenGLCore41 multiThreaded:NO executor:[AsyncGLExecutor new]];
     [controller loadViewIfNeeded];
     DisplayClockView *view = (DisplayClockView *)controller.glView;
     NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(100, 100, 32, 24)

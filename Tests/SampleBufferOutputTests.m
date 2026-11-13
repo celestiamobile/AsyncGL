@@ -2,7 +2,17 @@
 #import "../AsyncGL/AsyncGLSampleBufferOutput.h"
 #import "../AsyncGL/AsyncGLMirroringTarget.m"
 #import "../AsyncGL/AsyncGLMirroringView.m"
+#ifndef USE_EGL
+static BOOL failDriverThreading;
+static CGLError EnableDriverThreading(CGLContextObj context, CGLContextEnable option) {
+    return failDriverThreading && option == kCGLCEMPEngine ? kCGLBadState : CGLEnable(context, option);
+}
+#define CGLEnable EnableDriverThreading
+#endif
 #import "../AsyncGL/AsyncGLView.m"
+#ifndef USE_EGL
+#undef CGLEnable
+#endif
 #import "../AsyncGL/AsyncGLExecutor.m"
 #import "../AsyncGL/AsyncGLViewController.m"
 #include <stdatomic.h>
@@ -254,6 +264,59 @@ static void PumpUntil(BOOL (^finished)(void), NSString *message) {
     Check(finished(), message);
 }
 
+@interface DriverThreadingController : AsyncGLViewController
+@property (nonatomic) BOOL expectedThreading;
+@property (atomic) BOOL checkedThreading;
+@end
+
+@implementation DriverThreadingController
+- (BOOL)prepareGL:(CGSize)size samples:(NSInteger)samples {
+#ifdef USE_EGL
+    Check(eglGetCurrentContext() != EGL_NO_CONTEXT, @"Driver threading must be a no-op with EGL");
+#else
+    GLint enabled = GL_FALSE;
+    Check(CGLIsEnabled(CGLGetCurrentContext(), kCGLCEMPEngine, &enabled) == kCGLNoError &&
+          (enabled != GL_FALSE) == self.expectedThreading, @"Controller must configure the render context's driver threading");
+#endif
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    Check(glGetError() == GL_NO_ERROR, @"Driver threading must preserve rendering");
+    self.checkedThreading = YES;
+    return YES;
+}
+@end
+
+static void TestDriverThreading(BOOL enabled, BOOL failEnable) {
+#ifdef USE_EGL
+    AsyncGLAPI api = AsyncGLAPIOpenGLES3;
+#else
+    AsyncGLAPI api = AsyncGLAPIOpenGLCore41;
+    failDriverThreading = failEnable;
+#endif
+    DriverThreadingController *controller = [[DriverThreadingController alloc]
+        initWithMSAAEnabled:NO initialFrameRate:60 api:api multiThreaded:enabled executor:[AsyncGLExecutor new]];
+    controller.expectedThreading = enabled;
+    [controller loadView];
+    AsyncGLView *view = controller.glView;
+    view.frame = NSMakeRect(0, 0, 32, 24);
+    [view createContexts];
+    if (failEnable) {
+        PumpUntil(^BOOL{ return view.contextState == AsyncGLViewContextStateFailed; }, @"Driver threading failure must stop initialization");
+        Check(!controller.checkedThreading && !controller.isReady, @"Driver threading failure must not report successful preparation");
+    } else {
+        PumpUntil(^BOOL{ return view.contextState == AsyncGLViewContextStateRenderContextCreated && controller.isReady; },
+                  @"Driver threading context initialization");
+        Check(controller.checkedThreading, @"Driver threading must be configured before prepareGL");
+    }
+    __block BOOL stopped = NO;
+    [controller shutdownWithCompletion:^{ stopped = YES; }];
+    PumpUntil(^BOOL{ return stopped; }, @"Driver threading controller shutdown");
+#ifndef USE_EGL
+    failDriverThreading = NO;
+#endif
+    NSLog(@"PASS: driver threading %@%@", enabled ? @"enabled" : @"disabled",
+          failEnable ? @" rejects initialization failure" : @"");
+}
+
 static void TestOutputLifecycle(void) {
     OutputLifecycleDelegate *delegate = [OutputLifecycleDelegate new];
     atomic_init(&delegate->draws, 0);
@@ -486,7 +549,7 @@ static void TestExecutorBatches(void) {
 
 static void TestOffscreenPreparation(BOOL pauseDuringPreparation, BOOL disableDuringPreparation) {
     FrameClockPreparationController *controller = [[FrameClockPreparationController alloc]
-        initWithMSAAEnabled:NO initialFrameRate:60 api:AsyncGLAPIOpenGLES3 executor:[AsyncGLExecutor new]];
+        initWithMSAAEnabled:NO initialFrameRate:60 api:AsyncGLAPIOpenGLES3 multiThreaded:NO executor:[AsyncGLExecutor new]];
     FrameClockTestView *view = [FrameClockTestView new];
     view.workerPaused = YES;
     controller.glView = view;
@@ -539,7 +602,7 @@ static void TestOffscreenPreparation(BOOL pauseDuringPreparation, BOOL disableDu
 static void TestOffscreenFrameClock(void) {
     AsyncGLExecutor *executor = [AsyncGLExecutor new];
     AsyncGLViewController *controller = [[AsyncGLViewController alloc]
-        initWithMSAAEnabled:NO initialFrameRate:60 api:AsyncGLAPIOpenGLES3 executor:executor];
+        initWithMSAAEnabled:NO initialFrameRate:60 api:AsyncGLAPIOpenGLES3 multiThreaded:NO executor:executor];
     FrameClockTestView *view = [FrameClockTestView new];
     controller.glView = view;
     controller.ready = YES;
@@ -577,6 +640,11 @@ static void TestOffscreenFrameClock(void) {
 
 int main(void) {
     @autoreleasepool {
+        TestDriverThreading(NO, NO);
+        TestDriverThreading(YES, NO);
+#ifndef USE_EGL
+        TestDriverThreading(YES, YES);
+#endif
         TestOutput(NO);
         TestOutput(YES);
         TestOutputLifecycle();

@@ -29,13 +29,13 @@ let package = Package(
     targets: [
         .binaryTarget(
             name: "libGLESv2",
-            url: "https://github.com/celestiamobile/angle-apple/releases/download/1.1.54/libGLESv2.xcframework.zip",
-            checksum: "9b52c2e92e6d4f1b138f8721d0c45a6dff55bdf173111815f14746ccfdec9a68"
+            url: "https://github.com/celestiamobile/angle-apple/releases/download/1.1.56/libGLESv2.xcframework.zip",
+            checksum: "1faa65ebecc96eeff0594d338b21e32d989d2134a5ebcca7eac5b4c8820ad5cc"
         ),
         .binaryTarget(
             name: "libEGL",
-            url: "https://github.com/celestiamobile/angle-apple/releases/download/1.1.54/libEGL.xcframework.zip",
-            checksum: "9789ca3787b7d780f1f1fae8139c9bce0af6e41a54b19984fc0edbe39be29da5"
+            url: "https://github.com/celestiamobile/angle-apple/releases/download/1.1.56/libEGL.xcframework.zip",
+            checksum: "886b0b76fea486f403f5122da0b1f95415d5d900ac16bfee38819501c3fbb95f"
         ),
         .target(
             name: "AsyncGL",
